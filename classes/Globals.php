@@ -10,19 +10,25 @@ class Globals {
 
     static private $instance = null;
     //массив с CALL_ID из битрикса, ключ - Uniqueid из asterisk
-    public $calls = [];
+    public $calls = array();
 	//массив с uniqueid внешних звонкнов
-    public $uniqueids = [];
+    public $uniqueids = array();
 	//массив FullFname (url'ы записей разговоров), ключ - Uniqueid из asterisk
-    public $FullFnameUrls = [];
+    public $FullFnameUrls = array();
 	//массив внутренних номеров, ключ - Uniqueid из asterisk
-	public $intNums = [];
+	public $intNums = array();
 	//массив duration звонков, ключ - Uniqueid из asterisk
-    public $Durations = [];
+    public $Durations = array();
 	//массив disposition звонков, ключ - Uniqueid из asterisk
-    public $Dispositions = [];
+    public $Dispositions = array();
     //массив extensions - внешние номера, звонки на которые мы отслеживаем
-    public $extensions = [];
+    public $extensions = array();
+
+    public $user_show_cards = array();
+
+    public $Onhold = array();
+
+    public $Answers = array();
 
     static public function getInstance(){
 		if (null === self::$instance) {

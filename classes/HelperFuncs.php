@@ -15,14 +15,17 @@ class HelperFuncs {
 	 *
 	 * @return int internal user number
 	 */
-	public function getIntNumByUSER_ID($userid){ 
+	public function getIntNumByUSER_ID($userid){
+        $this->writeToLog(NULL, 'getIntNumByUSER_ID');
 	    $result = $this->getBitrixApi(array("ID" => $userid), 'user.get');
+        $this->writeToLog($result, 'getIntNumByUSER_ID');
 	    if ($result){
+
 	        return $result['result'][0]['UF_PHONE_INNER'];
 	    } else {
 	        return false;
 	    }
-    
+
 	}
 
 	/**
@@ -39,7 +42,6 @@ class HelperFuncs {
 	    } else {
 	        return false;
 	    }
-    
 	}
 
 	/**
@@ -52,12 +54,13 @@ class HelperFuncs {
 	 *
 	 * @return int internal user number
 	 */
-	public function uploadRecordedFile($call_id,$recordedfile,$intNum,$duration,$disposition){
+	public function uploadRecordedFile($call_id, $recordedfile, $intNum, $duration, $disposition){
 		switch ($disposition) {
-		 	case 'ANSWERED':
+            case 'ANSWER':
+            case 'ANSWERED':
 		 		$sipcode = 200; // успешный звонок
 		 		break;
-		 	case 'NO ANSWER':
+            case 'NO ANSWER':
 		 		$sipcode = 304; // нет ответа
 		 		break;
 		 	case 'BUSY':
@@ -73,7 +76,7 @@ class HelperFuncs {
 			    	'USER_PHONE_INNER' => $intNum,
 					'CALL_ID' => $call_id, //идентификатор звонка из результатов вызова метода telephony.externalCall.register
 					'STATUS_CODE' => $sipcode, 
-					//'CALL_START_DATE' => date("Y-m-d H:i:s"),
+//					'CALL_START_DATE' => date("Y-m-d H:i:s"),
 					'DURATION' => $duration, //длительность звонка в секундах
 					'RECORD_URL' => $recordedfile //url на запись звонка для сохранения в Битрикс24
 					), 'telephony.externalcall.finish');
@@ -84,6 +87,19 @@ class HelperFuncs {
 	    }
     
 	}
+//    загрузка аудиофайла
+	public function uploadRecorderedFileTruth($call_id, $recordedfile, $recordUrl){
+        $result = $this->getBitrixApi(array(
+            'CALL_ID' => $call_id, //идентификатор звонка из результатов вызова метода telephony.externalCall.register
+            'RECORD_URL' => $recordUrl, //url на запись звонка для сохранения в Битрикс24
+            'FILENAME' => $recordedfile
+        ), 'telephony.externalCall.attachRecord');
+        if ($result){
+            return $result;
+        } else {
+            return false;
+        }
+    }
 
 	/**
 	 * Run Bitrix24 REST API method telephony.externalcall.register.json  
@@ -104,17 +120,28 @@ class HelperFuncs {
 	 *	)
 	 * We need only CALL_ID
 	 */
-	public function runInputCall($exten,$callerid){ 
-	    $result = $this->getBitrixApi(array(
-			'USER_PHONE_INNER' => $exten,
-			//'USER_ID' => $argv[1],	
-			'PHONE_NUMBER' => $callerid,
-			'TYPE' => 2,
-			'CALL_START_DATE' => date("Y-m-d H:i:s"),
-			'CRM_CREATE' => 1,
-			'SHOW' => 0,
-			), 'telephony.externalcall.register');
+	public function runInputCall($exten, $callerid, $line, $crm_source=null){
+	    if (substr($callerid,0,1) == "9" and !(strlen($callerid) == 10)){
+            $callerid = substr($callerid, 1);
+        }
+	    if (strlen($callerid) == 7){
+            $callerid = "8342".$callerid;
+        }
+	    $data = array(
+            'USER_PHONE_INNER' => $exten,
+            //'USER_ID' => $argv[1],
+            'PHONE_NUMBER' => "+7".substr($callerid, -10),
+            'LINE_NUMBER' => $line,
+            'TYPE' => 2,
+            'CRM_CREATE' => 0,
+            'SHOW' => 1,
+        );
+	    if (!is_null($crm_source)) {
+	        $data['CRM_SOURCE'] = $crm_source;
+        }
+	    $result = $this->getBitrixApi($data, 'telephony.externalcall.register');
 	    $this->writeToLog($result, 'runInputCall result');
+	    echo var_dump($result);
 	    if ($result){
 	        return $result['result']['CALL_ID'];
 	    } else {
@@ -122,6 +149,52 @@ class HelperFuncs {
 	    }
     
 	}
+
+    /**
+     * Run Bitrix24 REST API method telephony.externalcall.register.json
+     *
+     * @param int $exten (${EXTEN} from the Asterisk server, i.e. internal number)
+     * @param int $callerid (${CALLERID(num)} from the Asterisk server, i.e. number which called us)
+     *
+     * @return array  like this:
+     * Array
+     *	(
+     *	    [result] => Array
+     *	        (
+     *	            [CALL_ID] => externalCall.cf1649fa0f4479870b76a0686f4a7058.1513888745
+     *	            [CRM_CREATED_LEAD] =>
+     *	            [CRM_ENTITY_TYPE] => LEAD
+     *	            [CRM_ENTITY_ID] => 24
+     *	        )
+     *	)
+     * We need only CALL_ID
+     */
+    public function runOutputCall($exten, $callerid, $line){
+        if (substr($callerid,0,1) == "9" and !(strlen($callerid) == 10)){
+            $callerid = substr($callerid, 1);
+        }
+        if (strlen($callerid) == 7){
+            $callerid = "8342".$callerid;
+        }
+        $result = $this->getBitrixApi(array(
+            'USER_PHONE_INNER' => $exten,
+            //'USER_ID' => $argv[1],
+            'PHONE_NUMBER' => "+7".substr($callerid, -10),
+            'LINE_NUMBER' => $line,
+            'TYPE' => 1,
+//            'CALL_START_DATE' => date("Y-m-d H:i:s"),
+            'CRM_CREATE' => 0,
+            'SHOW' => 1,
+        ), 'telephony.externalcall.register');
+        echo var_dump($result);
+        $this->writeToLog($result, 'runOutputCall result');
+        if ($result){
+            return $result['result']['CALL_ID'];
+        } else {
+            return false;
+        }
+
+    }
 
 	/**
 	 * Run Bitrix24 REST API method user.get.json return only online users array
@@ -255,6 +328,26 @@ class HelperFuncs {
 			return false;
 	}
 
+    /**
+     * Show input call data for user with internal number
+     *
+     * @param int $intNum (user internal number)
+     * @param int $call_id
+     *
+     * @return bool
+     */
+    public function showOutputCall($intNum, $call_id){
+        $user_id = $this->getUSER_IDByIntNum($intNum);
+        if ($user_id){
+            $result = $this->getBitrixApi(array(
+                'CALL_ID' => $call_id,
+                'USER_ID' => $user_id,
+            ), 'telephony.externalcall.show');
+            return $result;
+        } else
+            return false;
+    }
+
 	/**
 	 * Hide input call data for all except user with internal number.
 	 *
@@ -299,6 +392,20 @@ class HelperFuncs {
 		} else 
 			return false;
 	}
+
+    public function crmStatusList(){
+        $result = $this->getBitrixApi(array(
+            '' => '',
+        ), 'crm.status.list');
+        return $result;
+    }
+
+    public function crmStatusEntityTypes(){
+        $result = $this->getBitrixApi(array(
+            '' => '',
+        ), 'crm.status.entity.types');
+        return $result;
+    }
 
 	/**
 	 * Check string for json data.
@@ -393,6 +500,8 @@ class HelperFuncs {
 
         //return $data;
 	}
+
+
 
 	/**
 	 * Return config value.

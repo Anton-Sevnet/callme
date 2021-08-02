@@ -140,7 +140,58 @@ class CallAMI {
 	    return $result;
 	}
 
-	/**
+    /**
+     * GetVar channel
+     *
+     * @param string $channel
+     * @param string $var
+
+     *
+     * @return mixed
+     */
+    public function GetVar($channel, $var){
+        $pamiClientOptions = $this->conf;
+        if (!$pamiClientOptions) return false;
+        $pamiClient = new PamiClient($pamiClientOptions);
+        $getVarMsg = new GetVarAction($var, $channel);
+        $pamiClient->open();
+        $result = $pamiClient->send($getVarMsg);
+        $pamiClient->close();
+        return $result;
+    }
+
+    /**
+     * SetVar channel
+     *
+     * @param string $channel
+     * @param string $var
+     * @param string $value
+     *
+     * @return mixed
+     */
+    public function SetVar($var, $value, $channel){
+        $pamiClientOptions = $this->conf;
+        if (!$pamiClientOptions) return false;
+        $pamiClient = new PamiClient($pamiClientOptions);
+        $getVarMsg = new SetVarAction($var, $value, $channel);
+        $pamiClient->open();
+        $result = $pamiClient->send($getVarMsg);
+        $pamiClient->close();
+        return $result;
+    }
+
+    public function Hangup($channel){
+        $pamiClientOptions = $this->conf;
+        if (!$pamiClientOptions) return false;
+        $pamiClient = new PamiClient($pamiClientOptions);
+        $getVarMsg = new HangupAction($channel);
+        $pamiClient->open();
+        $result = $pamiClient->send($getVarMsg);
+        $pamiClient->close();
+        return $result;
+    }
+
+    /**
 	 * Create new PamiClient 
 	 *
 	 * @return PamiClient
