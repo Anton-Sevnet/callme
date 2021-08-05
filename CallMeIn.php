@@ -116,8 +116,7 @@ $pamiClient->registerEventListener(
                 }
         );
 
-//обрабатываем NewchannelEventOutgoing события - настроил
-// настроил Носков
+//обрабатываем NewchannelEventOutgoing события
 //NewchannelEvent outgoing
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper,$callami,$globalsObj){
