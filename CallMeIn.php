@@ -2,9 +2,6 @@
 <?php
 /**
 * CallMe events listener for incoming calls
-* 
-* 
-* 
 */
 
 // проверка на запуск из браузера
