@@ -514,7 +514,8 @@ class HelperFuncs {
 	public function getConfig($key) {
         $config = require(__DIR__.'/../config.php');
 		if (is_array($config)){
-			return $config[$key];
+			// PHP 8.2 совместимость: проверяем наличие ключа перед возвратом
+			return isset($config[$key]) ? $config[$key] : null;
 		} else return false;
 	}
 

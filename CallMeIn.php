@@ -87,8 +87,16 @@ $pamiClient->registerEventListener(
                 // выставим CallerID 
                 $callami->SetVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel);
                 $bx24 = $helper->getConfig('bx24');
+                // Проверка совместимости с PHP 8.2: array_key_exists требует массив
+                if (!is_array($bx24)) {
+                    $bx24 = array('default_user_number' => '100');
+                }
                 $intNum = array_key_exists($exten, $bx24) ? $bx24[$exten] : $bx24["default_user_number"];
                 $bx24_source = $helper->getConfig('bx24_crm_source');
+                // Проверка совместимости с PHP 8.2: array_key_exists требует массив
+                if (!is_array($bx24_source)) {
+                    $bx24_source = array('default_crm_source' => 'CALL');
+                }
                 $srmSource = array_key_exists($exten, $bx24_source) ? $bx24_source[$exten] : $bx24_source["default_crm_source"];
                 $globalsObj->calls[$callLinkedid] = $helper->runInputCall($intNum, $extNum, $exten, $srmSource);
                 $result = $helper->showInputCall($intNum, $globalsObj->calls[$callLinkedid] );
@@ -168,8 +176,9 @@ $pamiClient->registerEventListener(
             ($event instanceof NewchannelEvent)
             && ($event->getExtension() !== 's')
 //            && ($event->getContext() === 'E1' || $event->getContext() == 'office')
-            && is_array($globalsObj->user_show_cards)
-            && (in_array($event->getCallerIdNum(), $globalsObj->user_show_cards))
+            // Если user_show_cards пуст - показываем всем (Битрикс сам определит ответственного)
+            // Если заполнен - фильтруем по списку внутренних номеров
+            && (empty($globalsObj->user_show_cards) || in_array($event->getCallerIdNum(), $globalsObj->user_show_cards))
             ;
 }
 );
@@ -251,9 +260,10 @@ $pamiClient->registerEventListener(
         $callUniqueid = $event->getKey("Uniqueid");
         $exten = $event->getKey("DialString");
 
+        // Если user_show_cards пуст - показываем всем (Битрикс сам определит ответственного)
+        // Если заполнен - фильтруем по списку внутренних номеров
         if ($globalsObj->calls[$callUniqueid] !== 'undefined' 
-            && is_array($globalsObj->user_show_cards) 
-            && in_array($exten, $globalsObj->user_show_cards)) {
+            && (empty($globalsObj->user_show_cards) || in_array($exten, $globalsObj->user_show_cards))) {
             $result = $helper->showInputCall($exten, $globalsObj->calls[$callUniqueid]);
             $helper->writeToLog(var_export($result, true), "show input card to $exten ");
             $helper->writeToLog("show input call to ".$exten);
