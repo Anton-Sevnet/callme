@@ -1,6 +1,8 @@
 #!/usr/bin/php
 <?php
 /**
+* CallMe outgoing calls handler
+* PHP Version 8.2+
 **/
 
 require __DIR__ . '/vendor/autoload.php';
@@ -24,11 +26,11 @@ if(!empty($request)){
     //логируем запрос
     echo "----------------------------------------------- \n";
     $helper->writeToLog($request,'request');
-    if (!is_null($request['action'])){ //есть ли action
+    if (!empty($request['action'])){ //есть ли action
         switch ($request['action']) {
             case 'sendcall2b24': //отправляем инфу о звонке в битрикс
                 $helper->writeToLog($request,'sendcall2b24 action');
-                if (is_null($request['call_id']) || is_null($request['FullFname']) || is_null($request['CallIntNum']) || is_null($request['CallDuration']) || is_null($request['CallDisposition'])){
+                if (empty($request['call_id']) || empty($request['FullFname']) || empty($request['CallIntNum']) || empty($request['CallDuration']) || empty($request['CallDisposition'])){
                     $helper->writeToLog(null,'sendcall2b24 error in params');
                     exit('error in params');
                 }
@@ -37,7 +39,7 @@ if(!empty($request)){
                 $helper->writeToLog($resultFromB24,'sendcall2b24 upload call status');
             break;
             default:
-                $helper->writeToLog($request['event'],'action wrong');
+                $helper->writeToLog($request['event'] ?? 'no event','action wrong');
                 break;
             }
     } else {

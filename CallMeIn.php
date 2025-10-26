@@ -2,6 +2,7 @@
 <?php
 /**
 * CallMe events listener for incoming calls
+* PHP Version 8.2+
 */
 
 // проверка на запуск из браузера

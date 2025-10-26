@@ -4,6 +4,7 @@
 * @author Автор: ViStep.RU
 * @version 1.0
 * @copyright: ViStep.RU (admin@vistep.ru)
+* PHP Version 8.2+
 */
 
 class Globals {

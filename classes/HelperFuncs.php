@@ -4,6 +4,7 @@
 * @author Автор: ViStep.RU
 * @version 1.0
 * @copyright: ViStep.RU (admin@vistep.ru)
+* PHP Version 8.2+
 **/
 
 class HelperFuncs {
@@ -136,7 +137,7 @@ class HelperFuncs {
             'CRM_CREATE' => 0,
             'SHOW' => 1,
         );
-	    if (!is_null($crm_source)) {
+	    if ($crm_source !== null) {
 	        $data['CRM_SOURCE'] = $crm_source;
         }
 	    $result = $this->getBitrixApi($data, 'telephony.externalcall.register');

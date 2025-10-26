@@ -110,7 +110,7 @@ abstract class IncomingMessage extends Message
      */
     public function getChannelVariables($channel = null)
     {
-        if (is_null($channel)) {
+        if ($channel === null) {
             if (!isset($this->keys['channel'])) {
                 return $this->getChannelVariables('default');
             } else {

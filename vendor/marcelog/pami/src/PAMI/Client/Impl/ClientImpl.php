@@ -1,9 +1,8 @@
 <?php
-declare(ticks=1);
 /**
  * TCP Client implementation for AMI.
  *
- * PHP Version 5
+ * PHP Version 8.2+
  *
  * @category   Pami
  * @package    Client
@@ -347,7 +346,7 @@ class ClientImpl implements IClient
     {
         $response = new ResponseMessage($msg);
         $actionId = $response->getActionId();
-        if (is_null($actionId)) {
+        if ($actionId === null) {
             $actionId = $this->lastActionId;
             $response->setActionId($this->lastActionId);
         }
