@@ -125,7 +125,8 @@ class ResponseMessage extends IncomingMessage
      */
     public function isSuccess()
     {
-        return stristr($this->getKey('Response'), 'Error') === false;
+        $response = $this->getKey('Response');
+        return $response === null || stristr($response, 'Error') === false;
     }
 
     /**
@@ -137,9 +138,12 @@ class ResponseMessage extends IncomingMessage
      */
     public function isList()
     {
+        $eventList = $this->getKey('EventList');
+        $message = $this->getMessage();
+        
         return
-            stristr($this->getKey('EventList'), 'start') !== false
-            || stristr($this->getMessage(), 'follow') !== false
+            ($eventList !== null && stristr($eventList, 'start') !== false)
+            || ($message !== null && stristr($message, 'follow') !== false)
         ;
     }
 

@@ -24,6 +24,9 @@ class Globals {
     public $Dispositions = array();
     //массив extensions - внешние номера, звонки на которые мы отслеживаем
     public $extensions = array();
+    
+    //массив extentions - внешние номера (альтернативное название для совместимости)
+    public $extentions = array();
 
     public $user_show_cards = array();
 
