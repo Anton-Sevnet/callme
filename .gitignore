@@ -5,6 +5,7 @@ composer.phar
 # Logs
 logs/
 *.log
+deploy/*.log
 
 # Configuration files (may contain sensitive data)
 config.php

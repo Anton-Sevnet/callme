@@ -1,0 +1,63 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches:
+      - master  # Деплой при push в master
+  workflow_dispatch:  # Ручной запуск из GitHub UI
+
+jobs:
+  deploy:
+    name: Deploy Application
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Получить всю историю
+      
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'  # Укажите вашу версию PHP
+          extensions: mbstring, curl, json
+          tools: composer:v2
+      
+      - name: Validate composer.json
+        run: composer validate --strict
+      
+      - name: Install dependencies
+        run: composer install --no-dev --optimize-autoloader --no-interaction
+      
+      - name: Run tests (if available)
+        run: |
+          if [ -f "phpunit.xml" ]; then
+            ./vendor/bin/phpunit
+          else
+            echo "No tests found, skipping..."
+          fi
+      
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            cd ${{ secrets.PROJECT_PATH }}
+            git fetch origin master
+            git reset --hard origin/master
+            composer install --no-dev --optimize-autoloader
+            echo "Deployment completed at $(date)"
+      
+      - name: Send notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Deployment failed!"
+          fi
+
