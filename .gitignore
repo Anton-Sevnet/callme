@@ -1,0 +1,28 @@
+# Composer
+vendor/
+composer.phar
+
+# Logs
+logs/
+*.log
+
+# Configuration files (may contain sensitive data)
+config.php
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
