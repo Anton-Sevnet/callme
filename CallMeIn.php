@@ -168,6 +168,7 @@ $pamiClient->registerEventListener(
             ($event instanceof NewchannelEvent)
             && ($event->getExtension() !== 's')
 //            && ($event->getContext() === 'E1' || $event->getContext() == 'office')
+            && is_array($globalsObj->user_show_cards)
             && (in_array($event->getCallerIdNum(), $globalsObj->user_show_cards))
             ;
 }
@@ -250,7 +251,9 @@ $pamiClient->registerEventListener(
         $callUniqueid = $event->getKey("Uniqueid");
         $exten = $event->getKey("DialString");
 
-        if ($globalsObj->calls[$callUniqueid] !== 'undefined' and in_array($exten, $globalsObj->user_show_cards)) {
+        if ($globalsObj->calls[$callUniqueid] !== 'undefined' 
+            && is_array($globalsObj->user_show_cards) 
+            && in_array($exten, $globalsObj->user_show_cards)) {
             $result = $helper->showInputCall($exten, $globalsObj->calls[$callUniqueid]);
             $helper->writeToLog(var_export($result, true), "show input card to $exten ");
             $helper->writeToLog("show input call to ".$exten);
