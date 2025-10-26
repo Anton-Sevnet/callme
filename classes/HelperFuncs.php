@@ -119,7 +119,7 @@ class HelperFuncs {
 	 *	            [CRM_ENTITY_ID] => 24
 	 *	        )
 	 *	)
-	 * We need only CALL_ID
+	 * We need CALL_ID and CRM data
 	 */
 	public function runInputCall($exten, $callerid, $line, $crm_source=null){
 	    if (substr($callerid,0,1) == "9" and !(strlen($callerid) == 10)){
@@ -143,8 +143,8 @@ class HelperFuncs {
 	    $result = $this->getBitrixApi($data, 'telephony.externalcall.register');
 	    $this->writeToLog($result, 'runInputCall result');
 	    echo var_dump($result);
-	    if ($result){
-	        return $result['result']['CALL_ID'];
+	    if ($result && isset($result['result'])){
+	        return $result['result']; // Возвращаем полный результат, а не только CALL_ID
 	    } else {
 	        return false;
 	    }
@@ -286,6 +286,111 @@ class HelperFuncs {
 			if (isset($result['total']) && $result['total']>0) $FullName = $this->translit($result['result'][0]['NAME'].'_'.$result['result'][0]['LAST_NAME']);
 		}
 		return $FullName;
+	}
+
+	/**
+	 * Get responsible user ID from CRM entity
+	 *
+	 * @param string $entityType (LEAD, CONTACT, COMPANY, DEAL)
+	 * @param int $entityId
+	 *
+	 * @return int|false User ID or false on error
+	 */
+	public function getResponsibleFromCrmEntity($entityType, $entityId){
+		if (empty($entityType) || empty($entityId)) {
+			return false;
+		}
+
+		$this->writeToLog(array('entityType' => $entityType, 'entityId' => $entityId), 
+			'Getting responsible from CRM entity');
+
+		$method = '';
+		switch (strtoupper($entityType)) {
+			case 'LEAD':
+				$method = 'crm.lead.get';
+				break;
+			case 'CONTACT':
+				$method = 'crm.contact.get';
+				break;
+			case 'COMPANY':
+				$method = 'crm.company.get';
+				break;
+			case 'DEAL':
+				$method = 'crm.deal.get';
+				break;
+			default:
+				$this->writeToLog("Unknown entity type: $entityType", 'getResponsibleFromCrmEntity ERROR');
+				return false;
+		}
+
+		$result = $this->getBitrixApi(array('ID' => $entityId), $method);
+		$this->writeToLog($result, "getResponsibleFromCrmEntity result for $entityType:$entityId");
+
+		if ($result && isset($result['result']['ASSIGNED_BY_ID'])) {
+			return $result['result']['ASSIGNED_BY_ID'];
+		}
+
+		return false;
+	}
+
+	/**
+	 * Get internal phone number from CRM entity responsible
+	 * Returns responsible's internal number or fallback number
+	 *
+	 * @param array $callResult Result from telephony.externalcall.register
+	 * @param string $fallbackIntNum Fallback internal number from mapping
+	 *
+	 * @return string Internal phone number
+	 */
+	public function getResponsibleIntNum($callResult, $fallbackIntNum){
+		// Проверяем режим работы
+		$responsibleMode = $this->getConfig('responsible_mode');
+		
+		// Если режим статического маппинга - всегда возвращаем fallback
+		if ($responsibleMode === 'static_mapping') {
+			$this->writeToLog("Static mapping mode enabled, using fallback: $fallbackIntNum", 
+				'getResponsibleIntNum');
+			return $fallbackIntNum;
+		}
+		
+		// Режим CRM responsible (по умолчанию)
+		// Если нет данных о CRM сущности - возвращаем fallback
+		if (empty($callResult['CRM_ENTITY_TYPE']) || empty($callResult['CRM_ENTITY_ID'])) {
+			$this->writeToLog("No CRM entity found, using fallback: $fallbackIntNum", 
+				'getResponsibleIntNum');
+			return $fallbackIntNum;
+		}
+
+		// Получаем ID ответственного из CRM
+		$responsibleUserId = $this->getResponsibleFromCrmEntity(
+			$callResult['CRM_ENTITY_TYPE'], 
+			$callResult['CRM_ENTITY_ID']
+		);
+
+		if (!$responsibleUserId) {
+			$this->writeToLog("Cannot get responsible user ID, using fallback: $fallbackIntNum", 
+				'getResponsibleIntNum');
+			return $fallbackIntNum;
+		}
+
+		// Получаем внутренний номер ответственного
+		$responsibleIntNum = $this->getIntNumByUSER_ID($responsibleUserId);
+
+		if (!$responsibleIntNum) {
+			$this->writeToLog("Responsible user $responsibleUserId has no internal number, using fallback: $fallbackIntNum", 
+				'getResponsibleIntNum');
+			return $fallbackIntNum;
+		}
+
+		$this->writeToLog(array(
+			'mode' => 'crm_responsible',
+			'responsibleUserId' => $responsibleUserId,
+			'responsibleIntNum' => $responsibleIntNum,
+			'crmEntityType' => $callResult['CRM_ENTITY_TYPE'],
+			'crmEntityId' => $callResult['CRM_ENTITY_ID']
+		), 'Found responsible from CRM');
+
+		return $responsibleIntNum;
 	}
 
 	/**

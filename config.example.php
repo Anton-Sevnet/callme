@@ -37,7 +37,16 @@ return array(
         '8003',
     ),
     
+    // Responsible determination mode:
+    // 'crm_responsible' - show call card to CRM responsible (if found)
+    // 'static_mapping' - always use static mapping from 'bx24' below
+    'responsible_mode' => 'crm_responsible',
+    
     // Mapping: extension -> internal number
+    // Used as fallback when:
+    // - responsible_mode = 'static_mapping'
+    // - or CRM entity not found
+    // - or responsible has no internal number
     'bx24' => array(
         '8001' => '101',  // Extension 8001 -> Internal number 101
         '8002' => '102',

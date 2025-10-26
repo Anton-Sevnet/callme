@@ -86,22 +86,50 @@ $pamiClient->registerEventListener(
                                                
                 // выставим CallerID 
                 $callami->SetVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel);
+                
+                // Получаем внутренний номер из маппинга как fallback
                 $bx24 = $helper->getConfig('bx24');
                 // Проверка совместимости с PHP 8.2: array_key_exists требует массив
                 if (!is_array($bx24)) {
                     $bx24 = array('default_user_number' => '100');
                 }
-                $intNum = array_key_exists($exten, $bx24) ? $bx24[$exten] : $bx24["default_user_number"];
+                $fallbackIntNum = array_key_exists($exten, $bx24) ? $bx24[$exten] : $bx24["default_user_number"];
+                
                 $bx24_source = $helper->getConfig('bx24_crm_source');
                 // Проверка совместимости с PHP 8.2: array_key_exists требует массив
                 if (!is_array($bx24_source)) {
                     $bx24_source = array('default_crm_source' => 'CALL');
                 }
                 $srmSource = array_key_exists($exten, $bx24_source) ? $bx24_source[$exten] : $bx24_source["default_crm_source"];
-                $globalsObj->calls[$callLinkedid] = $helper->runInputCall($intNum, $extNum, $exten, $srmSource);
-                $result = $helper->showInputCall($intNum, $globalsObj->calls[$callLinkedid] );
-                $helper->writeToLog(var_export($result, true), "show input card to $intNum  from $exten");
-                echo "callid = ".$globalsObj->calls[$callLinkedid]." \n";
+                
+                // Регистрируем звонок в Битрикс24 и получаем полный результат
+                $callResult = $helper->runInputCall($fallbackIntNum, $extNum, $exten, $srmSource);
+                
+                if (!$callResult) {
+                    echo "Failed to register call in Bitrix24\n";
+                    return "";
+                }
+                
+                $call_id = $callResult['CALL_ID'];
+                
+                // Определяем внутренний номер: ответственного из CRM или fallback из маппинга
+                $intNum = $helper->getResponsibleIntNum($callResult, $fallbackIntNum);
+                
+                $helper->writeToLog(array(
+                    'fallbackIntNum' => $fallbackIntNum,
+                    'responsibleIntNum' => $intNum,
+                    'CRM_ENTITY_TYPE' => $callResult['CRM_ENTITY_TYPE'] ?? 'none',
+                    'CRM_ENTITY_ID' => $callResult['CRM_ENTITY_ID'] ?? 'none',
+                    'CALL_ID' => $call_id
+                ), 'Responsible determination');
+                
+                // Показываем карточку ответственному
+                $result = $helper->showInputCall($intNum, $call_id);
+                $helper->writeToLog(var_export($result, true), "show input card to $intNum (responsible) from $exten");
+                echo "callid = ".$call_id." \n";
+                echo "responsible intNum = ".$intNum." \n";
+                
+                $globalsObj->calls[$callLinkedid] = $call_id;
                 $globalsObj->intNums[$callLinkedid] = $intNum;
                 $globalsObj->Durations[$callLinkedid] = 0;
                 $globalsObj->Dispositions[$callLinkedid] = "NO ANSWER";
