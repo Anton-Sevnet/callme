@@ -501,14 +501,26 @@ $pamiClient->registerEventListener(
                     'Duration'=>$CallDuration,
                     'Disposition'=>$CallDisposition), true);
                 
-                // Upload with retry logic (5 attempts with increasing delays: 5s, 10s, 15s, 20s, 25s)
-                $resultFromB24 = $helper->uploadRecordedFileWithRetry($call_id,$FullFname,$CallIntNum,$CallDuration,$CallDisposition);
-                echo var_dump($resultFromB24);
-
-                echo "sended in bx24 \n";
-                echo var_export($resultFromB24, true);
-                //логируем, что нам рассказал битрикс в ответ на наш реквест
-                $helper->writeToLog($resultFromB24,'New HangupEvent Second Step - upload filename');
+                // Upload with async background process to avoid blocking main CallMeIn process
+                $uploadCmd = sprintf(
+                    'php %s/upload_recording_async.php %s %s %s %s %s > /dev/null 2>&1 &',
+                    __DIR__,
+                    escapeshellarg($call_id),
+                    escapeshellarg($FullFname),
+                    escapeshellarg($CallIntNum),
+                    escapeshellarg($CallDuration),
+                    escapeshellarg($CallDisposition)
+                );
+                exec($uploadCmd);
+                
+                $helper->writeToLog(array(
+                    'call_id' => $call_id,
+                    'url' => $FullFname,
+                    'intNum' => $CallIntNum,
+                    'duration' => $CallDuration
+                ), 'HangupEvent: Started async upload');
+                
+                echo "async upload started \n";
 
                 // удаляем из массивов тот вызов, который завершился
                 $helper->removeItemFromArray($globalsObj->uniqueids,$callLinkedid,'value');
