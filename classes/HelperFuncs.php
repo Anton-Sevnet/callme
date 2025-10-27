@@ -270,22 +270,25 @@ class HelperFuncs {
 	}
 
 	/**
-	 * Get CRM entity name by phone (Contact/Company/Lead)
+	 * Get CRM entity data by phone (Contact/Company/Lead)
 	 * Uses crm.duplicate.findbycomm to search across all CRM entities
 	 * Priority: 1) Contact, 2) Company, 3) Lead
 	 *
 	 * @param string $phone
 	 *
-	 * @return string Formatted name or phone number on fail 
+	 * @return array Array with 'name' and 'responsible_user_id' keys, or null values on fail
 	 */
-	public function getCrmEntityNameByPhone($phone){
+	public function getCrmEntityDataByPhone($phone){
 		// Ищем все связанные CRM-сущности по телефону
 		$duplicates = $this->getBitrixApi(array(
 			'TYPE' => 'PHONE',
 			'VALUES' => array($phone),
 		), 'crm.duplicate.findbycomm');
 
-		$FullName = $phone; // По умолчанию возвращаем номер телефона
+		$result = array(
+			'name' => $phone, // По умолчанию возвращаем номер телефона
+			'responsible_user_id' => null
+		);
 
 		if ($duplicates && isset($duplicates['result']) && !empty($duplicates['result'])) {
 			// Обрабатываем найденные сущности по приоритетам
@@ -298,7 +301,8 @@ class HelperFuncs {
 				if ($contact && isset($contact['result'])) {
 					$name = $contact['result']['NAME'] ?? '';
 					$lastName = $contact['result']['LAST_NAME'] ?? '';
-					$FullName = $this->translit(trim($name . '_' . $lastName));
+					$result['name'] = $this->translit(trim($name . '_' . $lastName));
+					$result['responsible_user_id'] = $contact['result']['ASSIGNED_BY_ID'] ?? null;
 				}
 			}
 			// Приоритет №2: Компания (COMPANY)
@@ -306,17 +310,35 @@ class HelperFuncs {
 				$companyId = $entities['COMPANY'][0]; // Берем первую найденную компанию
 				$company = $this->getBitrixApi(array('ID' => $companyId), 'crm.company.get');
 				if ($company && isset($company['result']['TITLE'])) {
-					$FullName = $this->translit($company['result']['TITLE']);
+					$result['name'] = $this->translit($company['result']['TITLE']);
+					$result['responsible_user_id'] = $company['result']['ASSIGNED_BY_ID'] ?? null;
 				}
 			}
 			// Приоритет №3: Лид (LEAD)
 			elseif (isset($entities['LEAD']) && !empty($entities['LEAD'])) {
 				$leadId = $entities['LEAD'][0]; // Берем первый найденный лид
-				$FullName = "Lead_ID_" . $leadId . "_" . $phone;
+				$lead = $this->getBitrixApi(array('ID' => $leadId), 'crm.lead.get');
+				$result['name'] = "Lead_ID_" . $leadId . "_" . $phone;
+				if ($lead && isset($lead['result']['ASSIGNED_BY_ID'])) {
+					$result['responsible_user_id'] = $lead['result']['ASSIGNED_BY_ID'];
+				}
 			}
 		}
 
-		return $FullName;
+		return $result;
+	}
+
+	/**
+	 * Get CRM entity name by phone (Contact/Company/Lead)
+	 * Wrapper for backward compatibility
+	 *
+	 * @param string $phone
+	 *
+	 * @return string Formatted name or phone number on fail 
+	 */
+	public function getCrmEntityNameByPhone($phone){
+		$data = $this->getCrmEntityDataByPhone($phone);
+		return $data['name'];
 	}
 
 	/**

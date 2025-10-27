@@ -79,10 +79,15 @@ $pamiClient->registerEventListener(
                                         'Exten' => $exten),
                                     'New NewchannelEvent call');
 
-                //выбираем из битрикса имя CRM-сущности (контакт/компания/лид) по номеру телефона и логируем
-                $CallMeCallerIDName = $helper->getCrmEntityNameByPhone($extNum);
-                $helper->writeToLog(array('CallMeCallerIDName'=>$CallMeCallerIDName,),
-                                    'CRM entity name by phone');
+                //выбираем из битрикса данные CRM-сущности (имя + ответственный) по номеру телефона
+                $crmData = $helper->getCrmEntityDataByPhone($extNum);
+                $CallMeCallerIDName = $crmData['name'];
+                $responsibleUserId = $crmData['responsible_user_id'];
+                
+                $helper->writeToLog(array(
+                    'CallMeCallerIDName' => $CallMeCallerIDName,
+                    'responsibleUserId' => $responsibleUserId
+                ), 'CRM entity data by phone');
                                                
                 // выставим CallerID 
                 $callami->SetVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel);
@@ -95,6 +100,27 @@ $pamiClient->registerEventListener(
                 }
                 $fallbackIntNum = array_key_exists($exten, $bx24) ? $bx24[$exten] : $bx24["default_user_number"];
                 
+                // Определяем внутренний номер ДО регистрации звонка
+                $intNum = $fallbackIntNum; // По умолчанию используем fallback
+                
+                // Если нашли ответственного в CRM - получаем его внутренний номер
+                if ($responsibleUserId) {
+                    $responsibleIntNum = $helper->getIntNumByUSER_ID($responsibleUserId);
+                    if ($responsibleIntNum) {
+                        $intNum = $responsibleIntNum;
+                        $helper->writeToLog(array(
+                            'responsibleUserId' => $responsibleUserId,
+                            'responsibleIntNum' => $responsibleIntNum
+                        ), 'Found responsible internal number from CRM');
+                    } else {
+                        $helper->writeToLog("Responsible user $responsibleUserId has no internal number, using fallback: $fallbackIntNum", 
+                            'Responsible determination');
+                    }
+                } else {
+                    $helper->writeToLog("No responsible found in CRM, using fallback: $fallbackIntNum", 
+                        'Responsible determination');
+                }
+                
                 $bx24_source = $helper->getConfig('bx24_crm_source');
                 // Проверка совместимости с PHP 8.2: array_key_exists требует массив
                 if (!is_array($bx24_source)) {
@@ -102,8 +128,8 @@ $pamiClient->registerEventListener(
                 }
                 $srmSource = array_key_exists($exten, $bx24_source) ? $bx24_source[$exten] : $bx24_source["default_crm_source"];
                 
-                // Регистрируем звонок в Битрикс24 и получаем полный результат
-                $callResult = $helper->runInputCall($fallbackIntNum, $extNum, $exten, $srmSource);
+                // Регистрируем звонок в Битрикс24 с ПРАВИЛЬНЫМ внутренним номером
+                $callResult = $helper->runInputCall($intNum, $extNum, $exten, $srmSource);
                 
                 if (!$callResult) {
                     echo "Failed to register call in Bitrix24\n";
@@ -112,16 +138,14 @@ $pamiClient->registerEventListener(
                 
                 $call_id = $callResult['CALL_ID'];
                 
-                // Определяем внутренний номер: ответственного из CRM или fallback из маппинга
-                $intNum = $helper->getResponsibleIntNum($callResult, $fallbackIntNum);
-                
                 $helper->writeToLog(array(
                     'fallbackIntNum' => $fallbackIntNum,
-                    'responsibleIntNum' => $intNum,
+                    'selectedIntNum' => $intNum,
+                    'responsibleUserId' => $responsibleUserId ?? 'none',
                     'CRM_ENTITY_TYPE' => $callResult['CRM_ENTITY_TYPE'] ?? 'none',
                     'CRM_ENTITY_ID' => $callResult['CRM_ENTITY_ID'] ?? 'none',
                     'CALL_ID' => $call_id
-                ), 'Responsible determination');
+                ), 'Call registered with responsible');
                 
                 // Показываем карточку ответственному
                 $result = $helper->showInputCall($intNum, $call_id);
