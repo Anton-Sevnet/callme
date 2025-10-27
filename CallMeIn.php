@@ -246,7 +246,11 @@ $pamiClient->registerEventListener(
         if (($event->getVariableName() === 'FILE' or $event->getVariableName() === '__FILE'
                 or $event->getVariableName() === 'MIXMONITOR_FILENAME') and
             !isset($globalsObj->FullFnameUrls[$callLinkedid])) {
-            $globalsObj->FullFnameUrls[$callLinkedid] = "http://0.0.0.0:0000/monitor".substr($event->getValue(), strrpos($event->getValue(), "/"));
+            // Извлекаем путь после /monitor/ и меняем расширение на .mp3
+            $filePath = $event->getValue();
+            $pathAfterMonitor = substr($filePath, strpos($filePath, '/monitor/') + 9);
+            $pathAfterMonitor = preg_replace('/\.(wav|WAV)$/', '.mp3', $pathAfterMonitor);
+            $globalsObj->FullFnameUrls[$callLinkedid] = "http://195.98.170.206/continuous/" . $pathAfterMonitor;
         }
 
         if (($event->getVariableName()  === 'ANSWER' or $event->getVariableName()  === "DIALSTATUS")
@@ -496,9 +500,9 @@ $pamiClient->registerEventListener(
                     'intNum'=>$CallIntNum,
                     'Duration'=>$CallDuration,
                     'Disposition'=>$CallDisposition), true);
-                $resultFromB24 = $helper->uploadRecordedFile($call_id,$FullFname,$CallIntNum,$CallDuration,$CallDisposition);
-                echo var_dump($resultFromB24);
-                $resultFromB24 = $helper->uploadRecorderedFileTruth($call_id,$FullFname,$FullFname);
+                
+                // Upload with retry logic (5 attempts with increasing delays: 5s, 10s, 15s, 20s, 25s)
+                $resultFromB24 = $helper->uploadRecordedFileWithRetry($call_id,$FullFname,$CallIntNum,$CallDuration,$CallDisposition);
                 echo var_dump($resultFromB24);
 
                 echo "sended in bx24 \n";

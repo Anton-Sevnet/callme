@@ -88,6 +88,89 @@ class HelperFuncs {
 	    }
     
 	}
+
+	/**
+	 * Upload recorded file with retry logic
+	 * Waits for MP3 conversion and retries up to 5 times with increasing delays
+	 *
+	 * @param string $call_id
+	 * @param string $recordedfile URL of the recording
+	 * @param string $intNum internal number
+	 * @param string $duration call duration
+	 * @param string $disposition call disposition
+	 *
+	 * @return array|false Result from Bitrix24 API or false
+	 */
+	public function uploadRecordedFileWithRetry($call_id, $recordedfile, $intNum, $duration, $disposition){
+		$maxAttempts = 5;
+		$initialDelay = 5;
+		
+		for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+			$delay = $initialDelay * $attempt;
+			
+			$this->writeToLog(array(
+				'attempt' => $attempt,
+				'delay' => $delay,
+				'url' => $recordedfile
+			), "Recording upload attempt $attempt/$maxAttempts, waiting {$delay}s");
+			
+			// Wait before checking
+			sleep($delay);
+			
+			// Check if file is available via HTTP HEAD request
+			$fileAvailable = $this->checkFileAvailability($recordedfile);
+			
+			if ($fileAvailable) {
+				$this->writeToLog("File available, uploading to Bitrix24", "Recording upload attempt $attempt");
+				
+				// Upload using both methods as in original code
+				$result1 = $this->uploadRecordedFile($call_id, $recordedfile, $intNum, $duration, $disposition);
+				$result2 = $this->uploadRecorderedFileTruth($call_id, $recordedfile, $recordedfile);
+				
+				$this->writeToLog(array(
+					'finish_result' => $result1,
+					'attach_result' => $result2
+				), "Recording uploaded successfully on attempt $attempt");
+				
+				return $result1;
+			} else {
+				$this->writeToLog("File not available yet", "Recording upload attempt $attempt/$maxAttempts");
+				
+				if ($attempt === $maxAttempts) {
+					$this->writeToLog("Failed to upload recording after $maxAttempts attempts", "Recording upload FAILED");
+					// Still try to finish the call even without recording
+					return $this->uploadRecordedFile($call_id, '', $intNum, $duration, $disposition);
+				}
+			}
+		}
+		
+		return false;
+	}
+
+	/**
+	 * Check if file is available via HTTP HEAD request
+	 *
+	 * @param string $url
+	 *
+	 * @return bool
+	 */
+	private function checkFileAvailability($url){
+		if (empty($url)) {
+			return false;
+		}
+		
+		$ch = curl_init($url);
+		curl_setopt($ch, CURLOPT_NOBODY, true);
+		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+		curl_exec($ch);
+		$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		curl_close($ch);
+		
+		return ($httpCode === 200);
+	}
+
 //    загрузка аудиофайла
 	public function uploadRecorderedFileTruth($call_id, $recordedfile, $recordUrl){
         $result = $this->getBitrixApi(array(
