@@ -540,6 +540,19 @@ class HelperFuncs {
 		if (!$url) return false;
 	    $queryUrl = $url.$method.'.json';
 	    $queryData = http_build_query($data);
+	    
+	    // Логирование запроса к Битрикс24 в режиме дебаг
+	    $debug = $this->getConfig('CallMeDEBUG');
+	    if($debug){
+	        $logData = array(
+	            'URL' => $queryUrl,
+	            'METHOD' => $method,
+	            'PARAMS' => $data,
+	            'PARAMS_JSON' => json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)
+	        );
+	        $this->writeToLog($logData, 'Bitrix24 API Request');
+	    }
+	    
 	    $curl = curl_init();
 	    curl_setopt_array($curl, array(
 	    CURLOPT_SSL_VERIFYPEER => 0,
@@ -554,8 +567,16 @@ class HelperFuncs {
 	    
 	    if ($this->isJson($result)){
 	        $result = json_decode($result, true);
+	        // Логирование ответа от Битрикс24 в режиме дебаг
+	        if($debug){
+	            $this->writeToLog($result, 'Bitrix24 API Response');
+	        }
 	        return $result;
 	    } else {
+	        // Логирование ошибки парсинга JSON
+	        if($debug){
+	            $this->writeToLog($result, 'Bitrix24 API Response ERROR (not JSON)');
+	        }
 	        return false;
 	    }
 	}
