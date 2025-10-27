@@ -270,21 +270,52 @@ class HelperFuncs {
 	}
 
 	/**
-	 * Get CRM contact name by phone
+	 * Get CRM entity name by phone (Contact/Company/Lead)
+	 * Uses crm.duplicate.findbycomm to search across all CRM entities
+	 * Priority: 1) Contact, 2) Company, 3) Lead
 	 *
 	 * @param string $phone
 	 *
-	 * @return string or extNum on fail 
+	 * @return string Formatted name or phone number on fail 
 	 */
-	public function getCrmContactNameByExtNum($extNum){
-		$result = $this->getBitrixApi(array(
-						'FILTER' => array ('PHONE' => $extNum,),
-						'SELECT' => array ('NAME', 'LAST_NAME',),
-					), 'crm.contact.list');
-		$FullName = $extNum;
-		if ($result) {
-			if (isset($result['total']) && $result['total']>0) $FullName = $this->translit($result['result'][0]['NAME'].'_'.$result['result'][0]['LAST_NAME']);
+	public function getCrmEntityNameByPhone($phone){
+		// Ищем все связанные CRM-сущности по телефону
+		$duplicates = $this->getBitrixApi(array(
+			'TYPE' => 'PHONE',
+			'VALUES' => array($phone),
+		), 'crm.duplicate.findbycomm');
+
+		$FullName = $phone; // По умолчанию возвращаем номер телефона
+
+		if ($duplicates && isset($duplicates['result']) && !empty($duplicates['result'])) {
+			// Обрабатываем найденные сущности по приоритетам
+			$entities = $duplicates['result'];
+			
+			// Приоритет №1: Контакт (CONTACT)
+			if (isset($entities['CONTACT']) && !empty($entities['CONTACT'])) {
+				$contactId = $entities['CONTACT'][0]; // Берем первый найденный контакт
+				$contact = $this->getBitrixApi(array('ID' => $contactId), 'crm.contact.get');
+				if ($contact && isset($contact['result'])) {
+					$name = $contact['result']['NAME'] ?? '';
+					$lastName = $contact['result']['LAST_NAME'] ?? '';
+					$FullName = $this->translit(trim($name . '_' . $lastName));
+				}
+			}
+			// Приоритет №2: Компания (COMPANY)
+			elseif (isset($entities['COMPANY']) && !empty($entities['COMPANY'])) {
+				$companyId = $entities['COMPANY'][0]; // Берем первую найденную компанию
+				$company = $this->getBitrixApi(array('ID' => $companyId), 'crm.company.get');
+				if ($company && isset($company['result']['TITLE'])) {
+					$FullName = $this->translit($company['result']['TITLE']);
+				}
+			}
+			// Приоритет №3: Лид (LEAD)
+			elseif (isset($entities['LEAD']) && !empty($entities['LEAD'])) {
+				$leadId = $entities['LEAD'][0]; // Берем первый найденный лид
+				$FullName = "Lead_ID_" . $leadId . "_" . $phone;
+			}
 		}
+
 		return $FullName;
 	}
 

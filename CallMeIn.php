@@ -79,10 +79,10 @@ $pamiClient->registerEventListener(
                                         'Exten' => $exten),
                                     'New NewchannelEvent call');
 
-                //выбираем из битрикса полное имя контакта по номеру телефона и логируем
-                $CallMeCallerIDName = $helper->getCrmContactNameByExtNum($extNum);
+                //выбираем из битрикса имя CRM-сущности (контакт/компания/лид) по номеру телефона и логируем
+                $CallMeCallerIDName = $helper->getCrmEntityNameByPhone($extNum);
                 $helper->writeToLog(array('CallMeCallerIDName'=>$CallMeCallerIDName,),
-                                    'Contact name by extNum');
+                                    'CRM entity name by phone');
                                                
                 // выставим CallerID 
                 $callami->SetVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel);
