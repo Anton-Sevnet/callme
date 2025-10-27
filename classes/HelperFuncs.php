@@ -46,6 +46,58 @@ class HelperFuncs {
 	}
 
 	/**
+	 * Get STATUS_CODE from call disposition
+	 *
+	 * @param string $disposition
+	 *
+	 * @return int SIP status code
+	 */
+	public function getStatusCodeFromDisposition($disposition){
+		switch ($disposition) {
+			case 'ANSWER':
+			case 'ANSWERED':
+				return 200; // успешный звонок
+			case 'NO ANSWER':
+			case 'NOANSWER':
+				return 304; // нет ответа
+			case 'BUSY':
+				return 486; // занято
+			case 'CANCEL':
+			case 'CANCELLED':
+				return 603; // отклонено
+			default:
+				if(empty($disposition)) return 304; //если пустой пришел, то поставим неотвечено
+				else return 603; // отклонено, когда все остальное
+		}
+	}
+
+	/**
+	 * Finish call in Bitrix24 without recording (immediate)
+	 *
+	 * @param string $call_id
+	 * @param string $intNum
+	 * @param string $duration
+	 * @param int $statusCode
+	 *
+	 * @return array|false Result from API or false on error
+	 */
+	public function finishCall($call_id, $intNum, $duration, $statusCode){
+		$result = $this->getBitrixApi(array(
+			'USER_PHONE_INNER' => $intNum,
+			'CALL_ID' => $call_id,
+			'STATUS_CODE' => $statusCode,
+			'DURATION' => $duration,
+			'RECORD_URL' => '' // Пустая строка - запись будет прикреплена потом
+		), 'telephony.externalcall.finish');
+		
+		if ($result){
+			return $result;
+		} else {
+			return false;
+		}
+	}
+
+	/**
 	 * Upload recorded file to Bitrix24.
 	 *
 	 * @param string $call_id
@@ -56,22 +108,7 @@ class HelperFuncs {
 	 * @return int internal user number
 	 */
 	public function uploadRecordedFile($call_id, $recordedfile, $intNum, $duration, $disposition){
-		switch ($disposition) {
-            case 'ANSWER':
-            case 'ANSWERED':
-		 		$sipcode = 200; // успешный звонок
-		 		break;
-            case 'NO ANSWER':
-		 		$sipcode = 304; // нет ответа
-		 		break;
-		 	case 'BUSY':
-				$sipcode =  486; //  занято
-		 		break;		 	
-		 	default:
-		 		if(empty($disposition)) $sipcode = 304; //если пустой пришел, то поставим неотвечено
-				else $sipcode = 603; // отклонено, когда все остальное
-		 		break;
-		}
+		$sipcode = $this->getStatusCodeFromDisposition($disposition);
 
 	    $result = $this->getBitrixApi(array(
 			    	'USER_PHONE_INNER' => $intNum,

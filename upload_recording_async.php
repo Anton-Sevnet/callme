@@ -60,17 +60,15 @@ for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
     curl_close($ch);
     
     if ($httpCode === 200) {
-        $helper->writeToLog("File OK, uploading", 'ASYNC UPLOAD');
+        $helper->writeToLog("File OK, attaching to call", 'ASYNC UPLOAD');
         
-        // Upload to Bitrix24
-        $result1 = $helper->uploadRecordedFile($call_id, $recordedfile, $intNum, $duration, $disposition);
-        $result2 = $helper->uploadRecorderedFileTruth($call_id, $recordedfile, $recordedfile);
+        // Attach recording to already finished call
+        $result = $helper->uploadRecorderedFileTruth($call_id, $recordedfile, $recordedfile);
         
         $helper->writeToLog(array(
             'call_id' => $call_id,
             'attempt' => $attempt,
-            'finish' => $result1 ? 'OK' : 'FAIL',
-            'attach' => $result2 ? 'OK' : 'FAIL'
+            'attach' => $result ? 'OK' : 'FAIL'
         ), 'ASYNC UPLOAD SUCCESS');
         
         $success = true;
@@ -81,11 +79,11 @@ for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
         if ($attempt === $maxAttempts) {
             $helper->writeToLog(array(
                 'call_id' => $call_id,
-                'attempts' => $maxAttempts
+                'attempts' => $maxAttempts,
+                'note' => 'Call already finished without recording'
             ), 'ASYNC UPLOAD FAILED');
             
-            // Finish call without recording
-            $helper->uploadRecordedFile($call_id, '', $intNum, $duration, $disposition);
+            // finish уже вызван в основном процессе, здесь ничего не делаем
         }
     }
 }

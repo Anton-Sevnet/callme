@@ -243,14 +243,12 @@ $pamiClient->registerEventListener(
         echo $event->getRawContent();
         $callLinkedid = $event->getKey("Uniqueid");
 
-        if (($event->getVariableName() === 'FILE' or $event->getVariableName() === '__FILE'
-                or $event->getVariableName() === 'MIXMONITOR_FILENAME') and
+        if ($event->getVariableName() === 'B24_CONT_BASEPATH' and
             !isset($globalsObj->FullFnameUrls[$callLinkedid])) {
-            // Извлекаем путь после /monitor/ и меняем расширение на .mp3
+            // Извлекаем путь после /continuous/ и добавляем .mp3
             $filePath = $event->getValue();
-            $pathAfterMonitor = substr($filePath, strpos($filePath, '/monitor/') + 9);
-            $pathAfterMonitor = preg_replace('/\.(wav|WAV)$/', '.mp3', $pathAfterMonitor);
-            $globalsObj->FullFnameUrls[$callLinkedid] = "http://195.98.170.206/continuous/" . $pathAfterMonitor;
+            $pathAfterContinuous = substr($filePath, strpos($filePath, '/continuous/') + 12);
+            $globalsObj->FullFnameUrls[$callLinkedid] = "http://195.98.170.206/continuous/" . $pathAfterContinuous . ".mp3";
         }
 
         if (($event->getVariableName()  === 'ANSWER' or $event->getVariableName()  === "DIALSTATUS")
@@ -274,11 +272,10 @@ $pamiClient->registerEventListener(
             return
                 $event instanceof VarSetEvent
                 //проверяем что это именно нужная нам переменная
-                && ($event->getVariableName() === 'FILE'
+                && ($event->getVariableName() === 'B24_CONT_BASEPATH'
                     || $event->getVariableName() === 'DIALSTATUS'
                     || $event->getVariableName()  === 'CallMeDURATION'
-                    || $event->getVariableName()  === 'ANSWER'
-                    || $event->getVariableName()  === 'MIXMONITOR_FILENAME')
+                    || $event->getVariableName()  === 'ANSWER')
 
                 //проверяем на вхождение в массив
                 && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids);
@@ -500,6 +497,12 @@ $pamiClient->registerEventListener(
                     'intNum'=>$CallIntNum,
                     'Duration'=>$CallDuration,
                     'Disposition'=>$CallDisposition), true);
+                
+                // НЕМЕДЛЕННО завершаем звонок в Битрикс (БЕЗ записи)
+                $statusCode = $helper->getStatusCodeFromDisposition($CallDisposition);
+                $finishResult = $helper->finishCall($call_id, $CallIntNum, $CallDuration, $statusCode);
+                $helper->writeToLog($finishResult, 'Call finished immediately (without record)');
+                echo "call finished immediately in B24, status: $statusCode\n";
                 
                 // Upload with async background process to avoid blocking main CallMeIn process
                 $uploadCmd = sprintf(
