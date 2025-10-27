@@ -243,12 +243,11 @@ $pamiClient->registerEventListener(
         echo $event->getRawContent();
         $callLinkedid = $event->getKey("Uniqueid");
 
-        if ($event->getVariableName() === 'B24_CONT_BASEPATH' and
+        if ($event->getVariableName() === 'CallMeFULLFNAME' and
             !isset($globalsObj->FullFnameUrls[$callLinkedid])) {
-            // Извлекаем путь после /continuous/ и добавляем .mp3
-            $filePath = $event->getValue();
-            $pathAfterContinuous = substr($filePath, strpos($filePath, '/continuous/') + 12);
-            $globalsObj->FullFnameUrls[$callLinkedid] = "http://195.98.170.206/continuous/" . $pathAfterContinuous . ".mp3";
+            // Получаем относительный путь (YYYY/MM/DD/call-XXXXX.mp3) и формируем полный URL
+            $relativePath = $event->getValue();
+            $globalsObj->FullFnameUrls[$callLinkedid] = "http://195.98.170.206/continuous/" . $relativePath;
         }
 
         if (($event->getVariableName()  === 'ANSWER' or $event->getVariableName()  === "DIALSTATUS")
@@ -272,7 +271,7 @@ $pamiClient->registerEventListener(
             return
                 $event instanceof VarSetEvent
                 //проверяем что это именно нужная нам переменная
-                && ($event->getVariableName() === 'B24_CONT_BASEPATH'
+                && ($event->getVariableName() === 'CallMeFULLFNAME'
                     || $event->getVariableName() === 'DIALSTATUS'
                     || $event->getVariableName()  === 'CallMeDURATION'
                     || $event->getVariableName()  === 'ANSWER')
