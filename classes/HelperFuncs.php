@@ -771,4 +771,57 @@ class HelperFuncs {
 	    return strtr($string, $converter);
   	}
 
+	/**
+	 * Получить код статуса HTTP из DialStatus
+	 *
+	 * @param string $dialStatus
+	 * @return int HTTP status code
+	 */
+	public function getStatusCodeFromDialStatus($dialStatus) {
+		return match($dialStatus) {
+			'ANSWER' => 200,
+			'NOANSWER' => 480,    // Temporarily Unavailable
+			'BUSY' => 486,         // Busy Here
+			'CONGESTION' => 503,   // Service Unavailable
+			'CHANUNAVAIL' => 404,  // Not Found
+			'CANCEL' => 487,       // Request Terminated
+			default => 503
+		};
+	}
+
+	/**
+	 * Получить код статуса HTTP из Hangup Cause
+	 *
+	 * @param string $cause
+	 * @return int HTTP status code
+	 */
+	public function getStatusCodeFromCause($cause) {
+		return match($cause) {
+			'16' => 200,  // Normal Clearing
+			'17' => 486,  // User Busy  
+			'19' => 480,  // No Answer
+			'21' => 603,  // Decline
+			'1' => 404,   // Unallocated number
+			'102' => 408, // Request Timeout
+			default => 503
+		};
+	}
+
+	/**
+	 * Найти call_id по внутреннему номеру из существующих массивов
+	 *
+	 * @param string $intNum
+	 * @param object $globalsObj
+	 * @return string|null
+	 */
+	public function findCallIdByIntNum($intNum, $globalsObj) {
+		// Простой поиск в существующих массивах
+		foreach ($globalsObj->calls as $uniqueid => $call_id) {
+			if (isset($globalsObj->intNums[$uniqueid]) && $globalsObj->intNums[$uniqueid] == $intNum) {
+				return $call_id;
+			}
+		}
+		return null;
+	}
+
 }

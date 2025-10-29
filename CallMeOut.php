@@ -49,11 +49,13 @@ if(!empty($request)){
             $helper->writeToLog($request['data']['USER_ID'],'USER_ID');
             $helper->writeToLog($intNum,'intnum');
             $CalledNumber = $request['data']['PHONE_NUMBER_INTERNATIONAL'];
-            if (substr($CalledNumber,0,1) == "7") {
-                $CalledNumber = "8".substr($CalledNumber,1);
-            } else if (substr($CalledNumber,0,1) == "+"){
-                $CalledNumber = "8".substr($CalledNumber,2);
+            // Битрикс отдаёт номера в форматах:
+            // +7XXXXXXXXXX (международный) → преобразуем в 7XXXXXXXXXX
+            // 7XXXXXXXXXX (без плюса) → оставляем как есть
+            if (substr($CalledNumber, 0, 1) == "+") {
+                $CalledNumber = substr($CalledNumber, 1); // убираем только "+"
             }
+            // Результат: 7XXXXXXXXXX (подходит под паттерн _7XXXXXXXXXX в Asterisk)
             $helper->writeToLog($CalledNumber,'CalledNumber');
             $CallID = $request['data']['CALL_ID'];
             $helper->writeToLog($CallID,'CALL_ID');
