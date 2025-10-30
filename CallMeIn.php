@@ -551,48 +551,23 @@ $pamiClient->registerEventListener(
         );
 
 // ==========================================
-// ОБРАБОТЧИК: Originate-вызовы (минимальный)
+// ОБРАБОТЧИК: Originate-вызовы (улучшенный)
 // ==========================================
 
 // Массив для отслеживания Originate (только активные)
 $globalsObj->originateCalls = []; // [Uniqueid => ['call_id' => ..., 'intNum' => ...]]
+$globalsObj->originateChannels = []; // [Uniqueid => timestamp] - временное хранилище
 
-// 1. VarSetEvent для обнаружения Originate-вызовов (через переменную IS_CALLME_ORIGINATE)
+// 1. VarSetEvent для обнаружения Originate-канала (IS_CALLME_ORIGINATE)
 $pamiClient->registerEventListener(
-    function (EventMessage $event) use ($helper, $globalsObj, $callami) {
-        if ($event->getVariableName() === 'IS_CALLME_ORIGINATE') {
-            $uniqueid = $event->getKey("Uniqueid");
-            $channel = $event->getChannel();
-            
-            // Извлекаем внутренний номер (SIP/219 → 219)
-            if (preg_match('/^SIP\/(\d+)/', $channel, $matches)) {
-                $intNum = $matches[1];
-                
-                // Получаем CallMeCALL_ID из переменной канала
-                $varResponse = $callami->GetVar($channel, "CallMeCALL_ID");
-                if ($varResponse) {
-                    $rawContent = $varResponse->getRawContent();
-                    if (preg_match('/Value:\s*(.+)/i', $rawContent, $m)) {
-                        $call_id = trim($m[1]);
-                        
-                        if ($call_id && $call_id !== '(null)') {
-                            $globalsObj->originateCalls[$uniqueid] = [
-                                'call_id' => $call_id,
-                                'intNum' => $intNum,
-                                'timestamp' => time()
-                            ];
-                            
-                            $helper->writeToLog([
-                                'uniqueid' => $uniqueid,
-                                'call_id' => $call_id,
-                                'intNum' => $intNum,
-                                'channel' => $channel
-                            ], 'Originate: Tracking started');
-                        }
-                    }
-                }
-            }
-        }
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        $uniqueid = $event->getKey("Uniqueid");
+        $globalsObj->originateChannels[$uniqueid] = time();
+        
+        $helper->writeToLog([
+            'uniqueid' => $uniqueid,
+            'channel' => $event->getChannel()
+        ], 'Originate: Channel detected');
     },
     function (EventMessage $event) {
         return $event instanceof VarSetEvent 
@@ -600,27 +575,79 @@ $pamiClient->registerEventListener(
     }
 );
 
-// 2. DialEndEvent - результат набора внешнего
+// 2. VarSetEvent для получения CallMeCALL_ID (БЕЗ блокирующего GetVar!)
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        $uniqueid = $event->getKey("Uniqueid");
+        
+        // Проверяем что это НАШ Originate-канал
+        if (isset($globalsObj->originateChannels[$uniqueid])) {
+            $call_id = $event->getValue();
+            $channel = $event->getChannel();
+            
+            // Извлекаем внутренний номер (SIP/219 → 219)
+            if (preg_match('/^SIP\/(\d+)/', $channel, $matches)) {
+                $intNum = $matches[1];
+                
+                $globalsObj->originateCalls[$uniqueid] = [
+                    'call_id' => $call_id,
+                    'intNum' => $intNum,
+                    'timestamp' => time()
+                ];
+                
+                $helper->writeToLog([
+                    'uniqueid' => $uniqueid,
+                    'call_id' => $call_id,
+                    'intNum' => $intNum,
+                    'channel' => $channel
+                ], 'Originate: Tracking started with call_id');
+                
+                // Удаляем из временного хранилища
+                unset($globalsObj->originateChannels[$uniqueid]);
+            }
+        }
+    },
+    function (EventMessage $event) use ($globalsObj) {
+        $uniqueid = $event->getKey("Uniqueid");
+        return $event instanceof VarSetEvent 
+            && $event->getVariableName() === 'CallMeCALL_ID'
+            && isset($globalsObj->originateChannels[$uniqueid]);
+    }
+);
+
+// 3. DialEndEvent - результат набора внешнего
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("UniqueID");
         $dialStatus = $event->getDialStatus();
         
-        if (isset($globalsObj->originateCalls[$uniqueid]) && $dialStatus !== 'ANSWER') {
+        if (isset($globalsObj->originateCalls[$uniqueid])) {
             $data = $globalsObj->originateCalls[$uniqueid];
             
-            // Завершаем карточку с ошибкой
-            $statusCode = $helper->getStatusCodeFromDialStatus($dialStatus);
-            $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
-            
-            $helper->writeToLog([
-                'uniqueid' => $uniqueid,
-                'call_id' => $data['call_id'],
-                'dialStatus' => $dialStatus,
-                'statusCode' => $statusCode
-            ], 'Originate: External dial FAILED - finishing call');
-            
-            unset($globalsObj->originateCalls[$uniqueid]);
+            if ($dialStatus === 'ANSWER') {
+                // УСПЕХ - просто удаляем из отслеживания
+                // Обычный HangupEvent завершит карточку через базовую логику
+                $helper->writeToLog([
+                    'uniqueid' => $uniqueid,
+                    'call_id' => $data['call_id'],
+                    'dialStatus' => 'ANSWER'
+                ], 'Originate: External answered - SUCCESS, removing from tracking');
+                
+                unset($globalsObj->originateCalls[$uniqueid]);
+            } else {
+                // ОШИБКА - завершаем карточку И удаляем
+                $statusCode = $helper->getStatusCodeFromDialStatus($dialStatus);
+                $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
+                
+                $helper->writeToLog([
+                    'uniqueid' => $uniqueid,
+                    'call_id' => $data['call_id'],
+                    'dialStatus' => $dialStatus,
+                    'statusCode' => $statusCode
+                ], 'Originate: External dial FAILED - finishing call');
+                
+                unset($globalsObj->originateCalls[$uniqueid]);
+            }
         }
     },
     function (EventMessage $event) use ($globalsObj) {
@@ -630,26 +657,39 @@ $pamiClient->registerEventListener(
     }
 );
 
-// 3. HangupEvent - канал завершён
+// 4. HangupEvent - канал завершён (только для неудачных Originate)
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
         $cause = $event->getKey("Cause");
         
-        if (isset($globalsObj->originateCalls[$uniqueid]) && $cause !== '16') {
+        // ТОЛЬКО если вызов ЕЩЁ в массиве (не обработан DialEndEvent)
+        if (isset($globalsObj->originateCalls[$uniqueid])) {
             $data = $globalsObj->originateCalls[$uniqueid];
             
-            // Завершаем карточку с ошибкой
-            $statusCode = $helper->getStatusCodeFromCause($cause);
-            $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
+            // ТОЛЬКО если НЕ нормальное завершение
+            if ($cause !== '16') {
+                // Завершаем карточку с ошибкой
+                $statusCode = $helper->getStatusCodeFromCause($cause);
+                $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
+                
+                $helper->writeToLog([
+                    'uniqueid' => $uniqueid,
+                    'call_id' => $data['call_id'],
+                    'cause' => $cause,
+                    'statusCode' => $statusCode
+                ], 'Originate: Hangup with error - finishing call');
+            } else {
+                // Нормальное завершение - не завершаем карточку
+                // (уже обработано через DialEndEvent или через базовый HangupEvent)
+                $helper->writeToLog([
+                    'uniqueid' => $uniqueid,
+                    'call_id' => $data['call_id'],
+                    'cause' => $cause
+                ], 'Originate: Normal hangup - skipping (already handled)');
+            }
             
-            $helper->writeToLog([
-                'uniqueid' => $uniqueid,
-                'call_id' => $data['call_id'],
-                'cause' => $cause,
-                'statusCode' => $statusCode
-            ], 'Originate: Hangup with error - finishing call');
-            
+            // В любом случае удаляем из отслеживания
             unset($globalsObj->originateCalls[$uniqueid]);
         }
     },
