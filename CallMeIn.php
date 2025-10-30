@@ -325,8 +325,10 @@ $pamiClient->registerEventListener(
         }
 
     },function (EventMessage $event) use ($globalsObj) {
+    $uniqueid = $event->getKey("UniqueID");
     return
-        $event instanceof DialBeginEvent || $event->getKey("Event") == "Dial"
+        ($event instanceof DialBeginEvent || $event->getKey("Event") == "Dial")
+        && !isset($globalsObj->originateCalls[$uniqueid])  // НЕ Originate-вызов
         ;
 }
 );
@@ -430,10 +432,12 @@ $pamiClient->registerEventListener(
                 echo "\n\r";
             },
             function (EventMessage $event) use ($globalsObj) {
+                    $uniqueid = $event->getKey("UniqueID");
                     return
                         $event instanceof DialEndEvent
                         //проверяем входит ли событие в массив с uniqueid внешних звонков
-                        && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids);
+                        && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids)
+                        && !isset($globalsObj->originateCalls[$uniqueid]);  // НЕ Originate-вызов
 
                 }
         );
