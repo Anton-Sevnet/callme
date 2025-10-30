@@ -576,6 +576,7 @@ $pamiClient->registerEventListener(
                 'channels' => [],
                 'call_id' => null,
                 'intNum' => null,
+                'is_originate' => false,
                 'answered' => false,
                 'answer_time' => null,
                 'last_dialstatus' => null,
@@ -641,34 +642,53 @@ $pamiClient->registerEventListener(
         $call_id = $event->getValue();
         $channel = $event->getChannel();
         
-        // Находим linkedid через маппинг
-        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+        // Находим linkedid через маппинг, или используем uniqueid как linkedid
+        // (для первого канала Originate uniqueid == linkedid)
+        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? $uniqueid;
         
-        if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
-            // Извлекаем внутренний номер из канала (SIP/219 → 219)
-            $intNum = null;
-            if (preg_match('/^SIP\/(\d+)/', $channel, $matches)) {
-                $intNum = $matches[1];
+        // Инициализируем структуру если её нет
+        if (!isset($globalsObj->originateCalls[$linkedid])) {
+            $globalsObj->originateCalls[$linkedid] = [
+                'channels' => [],
+                'call_id' => null,
+                'intNum' => null,
+                'is_originate' => false,
+                'answered' => false,
+                'answer_time' => null,
+                'last_dialstatus' => null,
+                'last_hangup_cause' => null,
+                'created_at' => time(),
+                'last_activity' => time()
+            ];
+            
+            // Создаём маппинг если его нет
+            if (!isset($globalsObj->uniqueidToLinkedid[$uniqueid])) {
+                $globalsObj->uniqueidToLinkedid[$uniqueid] = $linkedid;
             }
-            
-            $globalsObj->originateCalls[$linkedid]['call_id'] = $call_id;
-            $globalsObj->originateCalls[$linkedid]['intNum'] = $intNum;
-            $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
-            
-            $helper->writeToLog([
-                'uniqueid' => $uniqueid,
-                'linkedid' => $linkedid,
-                'call_id' => $call_id,
-                'intNum' => $intNum,
-                'channel' => $channel
-            ], 'ORIGINATE: Tracking started with call_id');
         }
+        
+        // Извлекаем внутренний номер из канала (SIP/219 → 219)
+        $intNum = null;
+        if (preg_match('/^SIP\/(\d+)/', $channel, $matches)) {
+            $intNum = $matches[1];
+        }
+        
+        $globalsObj->originateCalls[$linkedid]['call_id'] = $call_id;
+        $globalsObj->originateCalls[$linkedid]['intNum'] = $intNum;
+        $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
+        
+        $helper->writeToLog([
+            'uniqueid' => $uniqueid,
+            'linkedid' => $linkedid,
+            'call_id' => $call_id,
+            'intNum' => $intNum,
+            'channel' => $channel,
+            'mapping_created' => !isset($globalsObj->uniqueidToLinkedid[$uniqueid])
+        ], 'ORIGINATE: Tracking started with call_id');
     },
-    function (EventMessage $event) use ($globalsObj) {
-        $uniqueid = $event->getKey("Uniqueid");
+    function (EventMessage $event) {
         return $event instanceof VarSetEvent 
-            && $event->getVariableName() === 'CallMeCALL_ID'
-            && isset($globalsObj->uniqueidToLinkedid[$uniqueid]);
+            && $event->getVariableName() === 'CallMeCALL_ID';
     }
 );
 
