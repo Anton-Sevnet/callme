@@ -557,37 +557,46 @@ $pamiClient->registerEventListener(
 // Массив для отслеживания Originate (только активные)
 $globalsObj->originateCalls = []; // [Uniqueid => ['call_id' => ..., 'intNum' => ...]]
 
-// 1. NewchannelEvent для Originate
+// 1. VarSetEvent для обнаружения Originate-вызовов (через переменную IS_CALLME_ORIGINATE)
 $pamiClient->registerEventListener(
-    function (EventMessage $event) use ($helper, $globalsObj) {
-        if ($event->getCallerIdName() === 'CallMe') {
+    function (EventMessage $event) use ($helper, $globalsObj, $callami) {
+        if ($event->getVariableName() === 'IS_CALLME_ORIGINATE') {
             $uniqueid = $event->getKey("Uniqueid");
             $channel = $event->getChannel();
             
             // Извлекаем внутренний номер (SIP/219 → 219)
             if (preg_match('/^SIP\/(\d+)/', $channel, $matches)) {
                 $intNum = $matches[1];
-                $call_id = $helper->findCallIdByIntNum($intNum, $globalsObj);
                 
-                if ($call_id) {
-                    $globalsObj->originateCalls[$uniqueid] = [
-                        'call_id' => $call_id,
-                        'intNum' => $intNum,
-                        'timestamp' => time()
-                    ];
-                    
-                    $helper->writeToLog([
-                        'uniqueid' => $uniqueid,
-                        'call_id' => $call_id,
-                        'intNum' => $intNum
-                    ], 'Originate: Tracking started');
+                // Получаем CallMeCALL_ID из переменной канала
+                $varResponse = $callami->GetVar($channel, "CallMeCALL_ID");
+                if ($varResponse) {
+                    $rawContent = $varResponse->getRawContent();
+                    if (preg_match('/Value:\s*(.+)/i', $rawContent, $m)) {
+                        $call_id = trim($m[1]);
+                        
+                        if ($call_id && $call_id !== '(null)') {
+                            $globalsObj->originateCalls[$uniqueid] = [
+                                'call_id' => $call_id,
+                                'intNum' => $intNum,
+                                'timestamp' => time()
+                            ];
+                            
+                            $helper->writeToLog([
+                                'uniqueid' => $uniqueid,
+                                'call_id' => $call_id,
+                                'intNum' => $intNum,
+                                'channel' => $channel
+                            ], 'Originate: Tracking started');
+                        }
+                    }
                 }
             }
         }
     },
     function (EventMessage $event) {
-        return $event instanceof NewchannelEvent 
-            && $event->getCallerIdName() === 'CallMe';
+        return $event instanceof VarSetEvent 
+            && $event->getVariableName() === 'IS_CALLME_ORIGINATE';
     }
 );
 

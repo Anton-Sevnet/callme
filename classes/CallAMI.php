@@ -133,8 +133,9 @@ class CallAMI {
 		$originateMsg->setExtension($CalledNumber);
 		$originateMsg->setAsync('true');
 		$originateMsg->setCallerId('CallMe');
-		//переменная с callid из битрикса
+		//переменные для отслеживания Originate-вызовов
 		$originateMsg->setVariable('CallMeCALL_ID', $CallId);
+		$originateMsg->setVariable('IS_CALLME_ORIGINATE', '1');
 		$pamiClient->open();
 	    $result = $pamiClient->send($originateMsg);
 	    $pamiClient->close();
