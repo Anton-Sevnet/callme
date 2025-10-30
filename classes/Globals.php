@@ -33,6 +33,11 @@ class Globals {
     public $Onhold = array();
 
     public $Answers = array();
+    
+    // Для отслеживания Originate-звонков (исходящие через Bitrix24)
+    public $originateCalls = array();      // [Uniqueid => ['call_id'=>..., 'intNum'=>...]]
+    public $originateChannels = array();   // [Uniqueid => timestamp] - временное хранилище
+    public $callsByCallId = array();       // [CALL_ID_B24 => Uniqueid] - обратная связка
 
     static public function getInstance(){
 		if (null === self::$instance) {

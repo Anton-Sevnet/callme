@@ -625,25 +625,32 @@ $pamiClient->registerEventListener(
             $data = $globalsObj->originateCalls[$uniqueid];
             
             if ($dialStatus === 'ANSWER') {
-                // УСПЕХ - просто удаляем из отслеживания
-                // Обычный HangupEvent завершит карточку через базовую логику
+                // УСПЕХ - переносим в базовые массивы для обработки в HangupEvent
+                $globalsObj->calls[$uniqueid] = $data['call_id'];
+                $globalsObj->intNums[$uniqueid] = $data['intNum'];
+                $globalsObj->uniqueids[] = $uniqueid;
+                $globalsObj->Dispositions[$uniqueid] = 'ANSWERED';
+                $globalsObj->Durations[$uniqueid] = 0;
+                
                 $helper->writeToLog([
                     'uniqueid' => $uniqueid,
                     'call_id' => $data['call_id'],
-                    'dialStatus' => 'ANSWER'
-                ], 'Originate: External answered - SUCCESS, removing from tracking');
+                    'intNum' => $data['intNum'],
+                    'action' => 'Transferred to base arrays for HangupEvent processing'
+                ], 'Originate: SUCCESS - moved from originateCalls to calls[]');
                 
                 unset($globalsObj->originateCalls[$uniqueid]);
             } else {
                 // ОШИБКА - завершаем карточку И удаляем
                 $statusCode = $helper->getStatusCodeFromDialStatus($dialStatus);
-                $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
+                $finishResult = $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
                 
                 $helper->writeToLog([
                     'uniqueid' => $uniqueid,
                     'call_id' => $data['call_id'],
                     'dialStatus' => $dialStatus,
-                    'statusCode' => $statusCode
+                    'statusCode' => $statusCode,
+                    'finishResult' => $finishResult
                 ], 'Originate: External dial FAILED - finishing call');
                 
                 unset($globalsObj->originateCalls[$uniqueid]);
@@ -657,7 +664,7 @@ $pamiClient->registerEventListener(
     }
 );
 
-// 4. HangupEvent - канал завершён (только для неудачных Originate)
+// 4. HangupEvent - канал завершён (только для неудачных Originate, которые НЕ обработаны DialEndEvent)
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
@@ -667,26 +674,28 @@ $pamiClient->registerEventListener(
         if (isset($globalsObj->originateCalls[$uniqueid])) {
             $data = $globalsObj->originateCalls[$uniqueid];
             
-            // ТОЛЬКО если НЕ нормальное завершение
-            if ($cause !== '16') {
-                // Завершаем карточку с ошибкой
-                $statusCode = $helper->getStatusCodeFromCause($cause);
-                $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
+            // Завершаем карточку на основе HangupCause
+            $statusCode = $helper->getStatusCodeFromCause($cause);
+            
+            // Только если не нормальное завершение (16 - Normal Clearing обрабатывается в DialEndEvent)
+            if ($cause != '16') {
+                $finishResult = $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
                 
                 $helper->writeToLog([
                     'uniqueid' => $uniqueid,
                     'call_id' => $data['call_id'],
                     'cause' => $cause,
-                    'statusCode' => $statusCode
+                    'causeText' => $helper->getHangupCauseText($cause),
+                    'statusCode' => $statusCode,
+                    'finishResult' => $finishResult
                 ], 'Originate: Hangup with error - finishing call');
             } else {
-                // Нормальное завершение - не завершаем карточку
-                // (уже обработано через DialEndEvent или через базовый HangupEvent)
                 $helper->writeToLog([
                     'uniqueid' => $uniqueid,
                     'call_id' => $data['call_id'],
-                    'cause' => $cause
-                ], 'Originate: Normal hangup - skipping (already handled)');
+                    'cause' => $cause,
+                    'causeText' => $helper->getHangupCauseText($cause)
+                ], 'Originate: Normal hangup - already handled by DialEndEvent');
             }
             
             // В любом случае удаляем из отслеживания

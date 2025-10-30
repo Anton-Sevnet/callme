@@ -46,14 +46,14 @@ class HelperFuncs {
 	}
 
 	/**
-	 * Get STATUS_CODE from call disposition
+	 * Get STATUS_CODE from call disposition (legacy method for compatibility)
 	 *
 	 * @param string $disposition
 	 *
 	 * @return int SIP status code
 	 */
 	public function getStatusCodeFromDisposition($disposition){
-		switch ($disposition) {
+		switch (strtoupper($disposition)) {
 			case 'ANSWER':
 			case 'ANSWERED':
 				return 200; // успешный звонок
@@ -65,10 +65,141 @@ class HelperFuncs {
 			case 'CANCEL':
 			case 'CANCELLED':
 				return 603; // отклонено
+			case 'CONGESTION':
+				return 503; // перегрузка сети
 			default:
 				if(empty($disposition)) return 304; //если пустой пришел, то поставим неотвечено
 				else return 603; // отклонено, когда все остальное
 		}
+	}
+
+	/**
+	 * Get STATUS_CODE for Bitrix24 from Asterisk DialStatus
+	 *
+	 * @param string $dialStatus DialStatus from DialEndEvent
+	 *
+	 * @return int Bitrix24 status code
+	 */
+	public function getStatusCodeFromDialStatus($dialStatus){
+		switch (strtoupper($dialStatus)) {
+			case 'ANSWER':
+				return 200; // успешный звонок
+			case 'BUSY':
+				return 486; // занято
+			case 'NOANSWER':
+				return 304; // нет ответа
+			case 'CANCEL':
+			case 'CANCELLED':
+				return 603; // отклонено
+			case 'CONGESTION':
+				return 503; // перегрузка сети
+			case 'CHANUNAVAIL':
+			case 'INVALIDNMBR':
+			case 'CHANGED':
+				return 404; // номер не найден
+			default:
+				return 603; // отклонено по умолчанию
+		}
+	}
+
+	/**
+	 * Get STATUS_CODE for Bitrix24 from Asterisk HangupCause
+	 *
+	 * @param string|int $cause HangupCause code from HangupEvent
+	 *
+	 * @return int Bitrix24 status code
+	 */
+	public function getStatusCodeFromCause($cause){
+		$cause = intval($cause);
+		
+		switch ($cause) {
+			case 16: // Normal Clearing
+				return 200;
+			case 17: // User Busy
+				return 486;
+			case 18: // No User Response
+			case 19: // No Answer
+				return 304;
+			case 21: // Call Rejected
+			case 31: // Normal Unspecified
+				return 603;
+			case 22: // Number Changed
+			case 23: // Redirected
+			case 28: // Invalid Number Format
+				return 404;
+			case 34: // Circuit Congestion
+			case 38: // Network Out of Order
+			case 41: // Temporary Failure
+			case 42: // Switching Congestion
+			case 47: // Resource Unavailable
+				return 503;
+			default:
+				return 603; // отклонено по умолчанию
+		}
+	}
+
+	/**
+	 * Get human-readable text for Asterisk HangupCause (for debugging)
+	 *
+	 * @param string|int $cause HangupCause code
+	 *
+	 * @return string Readable cause text
+	 */
+	public function getHangupCauseText($cause){
+		$cause = intval($cause);
+		
+		$causes = [
+			0 => 'Unspecified',
+			1 => 'Unallocated number',
+			2 => 'No route to network',
+			3 => 'No route to destination',
+			6 => 'Channel unacceptable',
+			7 => 'Call awarded',
+			16 => 'Normal Clearing',
+			17 => 'User busy',
+			18 => 'No user response',
+			19 => 'No answer',
+			20 => 'Subscriber absent',
+			21 => 'Call rejected',
+			22 => 'Number changed',
+			26 => 'Non-selected user clearing',
+			27 => 'Destination out of order',
+			28 => 'Invalid number format',
+			29 => 'Facility rejected',
+			31 => 'Normal unspecified',
+			34 => 'Circuit congestion',
+			38 => 'Network out of order',
+			41 => 'Temporary failure',
+			42 => 'Switching congestion',
+			43 => 'Access info discarded',
+			44 => 'Requested channel unavailable',
+			47 => 'Resource unavailable',
+			50 => 'Facility not subscribed',
+			52 => 'Outgoing call barred',
+			54 => 'Incoming call barred',
+			57 => 'Bearer capability not authorized',
+			58 => 'Bearer capability not available',
+			63 => 'Service unavailable',
+			65 => 'Bearer capability not implemented',
+			66 => 'Channel type not implemented',
+			69 => 'Facility not implemented',
+			79 => 'Service not implemented',
+			81 => 'Invalid call reference',
+			88 => 'Incompatible destination',
+			95 => 'Invalid message',
+			96 => 'Mandatory IE missing',
+			97 => 'Message type non-existent',
+			98 => 'Wrong message',
+			99 => 'IE non-existent',
+			100 => 'Invalid IE contents',
+			101 => 'Wrong call state',
+			102 => 'Recovery on timer expiry',
+			103 => 'Mandatory IE length error',
+			111 => 'Protocol error',
+			127 => 'Interworking'
+		];
+		
+		return $causes[$cause] ?? "Unknown cause ($cause)";
 	}
 
 	/**
@@ -770,42 +901,6 @@ class HelperFuncs {
 	    );
 	    return strtr($string, $converter);
   	}
-
-	/**
-	 * Получить код статуса HTTP из DialStatus
-	 *
-	 * @param string $dialStatus
-	 * @return int HTTP status code
-	 */
-	public function getStatusCodeFromDialStatus($dialStatus) {
-		return match($dialStatus) {
-			'ANSWER' => 200,
-			'NOANSWER' => 480,    // Temporarily Unavailable
-			'BUSY' => 486,         // Busy Here
-			'CONGESTION' => 503,   // Service Unavailable
-			'CHANUNAVAIL' => 404,  // Not Found
-			'CANCEL' => 487,       // Request Terminated
-			default => 503
-		};
-	}
-
-	/**
-	 * Получить код статуса HTTP из Hangup Cause
-	 *
-	 * @param string $cause
-	 * @return int HTTP status code
-	 */
-	public function getStatusCodeFromCause($cause) {
-		return match($cause) {
-			'16' => 200,  // Normal Clearing
-			'17' => 486,  // User Busy  
-			'19' => 480,  // No Answer
-			'21' => 603,  // Decline
-			'1' => 404,   // Unallocated number
-			'102' => 408, // Request Timeout
-			default => 503
-		};
-	}
 
 	/**
 	 * Найти call_id по внутреннему номеру из существующих массивов
