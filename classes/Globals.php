@@ -34,10 +34,9 @@ class Globals {
 
     public $Answers = array();
     
-    // Для отслеживания Originate-звонков (исходящие через Bitrix24)
-    public $originateCalls = array();      // [Uniqueid => ['call_id'=>..., 'intNum'=>...]]
-    public $originateChannels = array();   // [Uniqueid => timestamp] - временное хранилище
-    public $callsByCallId = array();       // [CALL_ID_B24 => Uniqueid] - обратная связка
+    // Для отслеживания Originate-звонков (исходящие через Bitrix24) - ВЕРСИЯ С LINKEDID
+    public $originateCalls = array();      // [linkedId => ['call_id'=>..., 'intNum'=>..., 'channels'=>[], 'answered'=>bool]]
+    public $uniqueidToLinkedid = array();  // [uniqueid => linkedId] - маппинг для быстрого поиска
 
     static public function getInstance(){
 		if (null === self::$instance) {

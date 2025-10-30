@@ -328,7 +328,8 @@ $pamiClient->registerEventListener(
     $uniqueid = $event->getKey("UniqueID");
     return
         ($event instanceof DialBeginEvent || $event->getKey("Event") == "Dial")
-        && !isset($globalsObj->originateCalls[$uniqueid])  // НЕ Originate-вызов
+        // НЕ Originate-вызов (те обрабатываются отдельно)
+        && !isset($globalsObj->uniqueidToLinkedid[$uniqueid])
         ;
 }
 );
@@ -437,7 +438,8 @@ $pamiClient->registerEventListener(
                         $event instanceof DialEndEvent
                         //проверяем входит ли событие в массив с uniqueid внешних звонков
                         && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids)
-                        && !isset($globalsObj->originateCalls[$uniqueid]);  // НЕ Originate-вызов
+                        // НЕ Originate-вызов (те обрабатываются отдельно)
+                        && !isset($globalsObj->uniqueidToLinkedid[$uniqueid]);
 
                 }
         );
@@ -546,32 +548,85 @@ $pamiClient->registerEventListener(
                 echo "\n-------------------------------------------------------------------\n\r";
                 echo "\n\r";
             },function (EventMessage $event) use ($globalsObj) {
+                    $uniqueid = $event->getKey("Uniqueid");
                     return
                         $event instanceof HangupEvent
                         //проверяем на вхождение в массив
-                        && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids)
+                        && in_array($uniqueid, $globalsObj->uniqueids)
+                        // НЕ Originate-вызов (те обрабатываются отдельно)
+                        && !isset($globalsObj->uniqueidToLinkedid[$uniqueid])
                         ;
                 }
         );
 
 // ==========================================
-// ОБРАБОТЧИК: Originate-вызовы (улучшенный)
+// ОБРАБОТЧИК: Originate-вызовы (с использованием Linkedid)
 // ==========================================
 
-// Массив для отслеживания Originate (только активные)
-$globalsObj->originateCalls = []; // [Uniqueid => ['call_id' => ..., 'intNum' => ...]]
-$globalsObj->originateChannels = []; // [Uniqueid => timestamp] - временное хранилище
-
-// 1. VarSetEvent для обнаружения Originate-канала (IS_CALLME_ORIGINATE)
+// 1. VarSetEvent (CallMeLINKEDID) - регистрация каждого канала звонка
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
-        $globalsObj->originateChannels[$uniqueid] = time();
+        $linkedid = $event->getValue(); // Значение переменной = Linkedid
+        $channel = $event->getChannel();
+        
+        // Создать запись для звонка если это первый канал
+        if (!isset($globalsObj->originateCalls[$linkedid])) {
+            $globalsObj->originateCalls[$linkedid] = [
+                'channels' => [],
+                'call_id' => null,
+                'intNum' => null,
+                'answered' => false,
+                'answer_time' => null,
+                'last_dialstatus' => null,
+                'last_hangup_cause' => null,
+                'created_at' => time(),
+                'last_activity' => time()
+            ];
+        }
+        
+        // Добавить канал в список
+        $globalsObj->originateCalls[$linkedid]['channels'][$uniqueid] = [
+            'channel' => $channel,
+            'added_at' => time()
+        ];
+        
+        // Создать маппинг для быстрого поиска
+        $globalsObj->uniqueidToLinkedid[$uniqueid] = $linkedid;
+        
+        // Обновить время активности
+        $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
         
         $helper->writeToLog([
             'uniqueid' => $uniqueid,
-            'channel' => $event->getChannel()
-        ], 'Originate: Channel detected');
+            'linkedid' => $linkedid,
+            'channel' => $channel,
+            'total_channels' => count($globalsObj->originateCalls[$linkedid]['channels'])
+        ], 'ORIGINATE-LINKEDID: Channel registered');
+    },
+    function (EventMessage $event) {
+        return $event instanceof VarSetEvent 
+            && $event->getVariableName() === 'CallMeLINKEDID';
+    }
+);
+
+// 2. VarSetEvent (IS_CALLME_ORIGINATE) - маркер Originate-вызова
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        $uniqueid = $event->getKey("Uniqueid");
+        
+        // Если уже есть маппинг (CallMeLINKEDID пришел раньше)
+        if (isset($globalsObj->uniqueidToLinkedid[$uniqueid])) {
+            $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid];
+            if (isset($globalsObj->originateCalls[$linkedid])) {
+                $globalsObj->originateCalls[$linkedid]['is_originate'] = true;
+                
+                $helper->writeToLog([
+                    'uniqueid' => $uniqueid,
+                    'linkedid' => $linkedid
+                ], 'ORIGINATE: Marked as Originate call');
+            }
+        }
     },
     function (EventMessage $event) {
         return $event instanceof VarSetEvent 
@@ -579,137 +634,206 @@ $pamiClient->registerEventListener(
     }
 );
 
-// 2. VarSetEvent для получения CallMeCALL_ID (БЕЗ блокирующего GetVar!)
+// 3. VarSetEvent (CallMeCALL_ID) - получение call_id от Bitrix24
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
+        $call_id = $event->getValue();
+        $channel = $event->getChannel();
         
-        // Проверяем что это НАШ Originate-канал
-        if (isset($globalsObj->originateChannels[$uniqueid])) {
-            $call_id = $event->getValue();
-            $channel = $event->getChannel();
-            
-            // Извлекаем внутренний номер (SIP/219 → 219)
+        // Находим linkedid через маппинг
+        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+        
+        if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+            // Извлекаем внутренний номер из канала (SIP/219 → 219)
+            $intNum = null;
             if (preg_match('/^SIP\/(\d+)/', $channel, $matches)) {
                 $intNum = $matches[1];
-                
-                $globalsObj->originateCalls[$uniqueid] = [
-                    'call_id' => $call_id,
-                    'intNum' => $intNum,
-                    'timestamp' => time()
-                ];
-                
-                $helper->writeToLog([
-                    'uniqueid' => $uniqueid,
-                    'call_id' => $call_id,
-                    'intNum' => $intNum,
-                    'channel' => $channel
-                ], 'Originate: Tracking started with call_id');
-                
-                // Удаляем из временного хранилища
-                unset($globalsObj->originateChannels[$uniqueid]);
             }
+            
+            $globalsObj->originateCalls[$linkedid]['call_id'] = $call_id;
+            $globalsObj->originateCalls[$linkedid]['intNum'] = $intNum;
+            $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
+            
+            $helper->writeToLog([
+                'uniqueid' => $uniqueid,
+                'linkedid' => $linkedid,
+                'call_id' => $call_id,
+                'intNum' => $intNum,
+                'channel' => $channel
+            ], 'ORIGINATE: Tracking started with call_id');
         }
     },
     function (EventMessage $event) use ($globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
         return $event instanceof VarSetEvent 
             && $event->getVariableName() === 'CallMeCALL_ID'
-            && isset($globalsObj->originateChannels[$uniqueid]);
+            && isset($globalsObj->uniqueidToLinkedid[$uniqueid]);
     }
 );
 
-// 3. DialEndEvent - результат набора внешнего
+// 4. DialEndEvent - результат набора внешнего номера
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("UniqueID");
         $dialStatus = $event->getDialStatus();
         
-        if (isset($globalsObj->originateCalls[$uniqueid])) {
-            $data = $globalsObj->originateCalls[$uniqueid];
+        // Находим linkedid через маппинг
+        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+        
+        if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+            $data = $globalsObj->originateCalls[$linkedid];
+            
+            $globalsObj->originateCalls[$linkedid]['last_dialstatus'] = $dialStatus;
+            $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
             
             if ($dialStatus === 'ANSWER') {
-                // УСПЕХ - переносим в базовые массивы для обработки в HangupEvent
-                $globalsObj->calls[$uniqueid] = $data['call_id'];
-                $globalsObj->intNums[$uniqueid] = $data['intNum'];
-                $globalsObj->uniqueids[] = $uniqueid;
-                $globalsObj->Dispositions[$uniqueid] = 'ANSWERED';
-                $globalsObj->Durations[$uniqueid] = 0;
+                // УСПЕХ - помечаем что звонок отвечен
+                $globalsObj->originateCalls[$linkedid]['answered'] = true;
+                $globalsObj->originateCalls[$linkedid]['answer_time'] = time();
                 
                 $helper->writeToLog([
                     'uniqueid' => $uniqueid,
+                    'linkedid' => $linkedid,
                     'call_id' => $data['call_id'],
-                    'intNum' => $data['intNum'],
-                    'action' => 'Transferred to base arrays for HangupEvent processing'
-                ], 'Originate: SUCCESS - moved from originateCalls to calls[]');
+                    'dialStatus' => $dialStatus,
+                    'total_channels' => count($data['channels'])
+                ], 'ORIGINATE: External dial SUCCESS - call answered');
                 
-                unset($globalsObj->originateCalls[$uniqueid]);
             } else {
-                // ОШИБКА - завершаем карточку И удаляем
+                // ОШИБКА - завершаем звонок СРАЗУ
                 $statusCode = $helper->getStatusCodeFromDialStatus($dialStatus);
                 $finishResult = $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
                 
                 $helper->writeToLog([
                     'uniqueid' => $uniqueid,
+                    'linkedid' => $linkedid,
                     'call_id' => $data['call_id'],
                     'dialStatus' => $dialStatus,
                     'statusCode' => $statusCode,
                     'finishResult' => $finishResult
-                ], 'Originate: External dial FAILED - finishing call');
+                ], 'ORIGINATE: External dial FAILED - finishing call immediately');
                 
-                unset($globalsObj->originateCalls[$uniqueid]);
+                // Очистка всех маппингов
+                foreach ($data['channels'] as $uid => $channelData) {
+                    unset($globalsObj->uniqueidToLinkedid[$uid]);
+                }
+                unset($globalsObj->originateCalls[$linkedid]);
             }
         }
     },
     function (EventMessage $event) use ($globalsObj) {
         $uniqueid = $event->getKey("UniqueID");
         return $event instanceof DialEndEvent 
-            && isset($globalsObj->originateCalls[$uniqueid]);
+            && isset($globalsObj->uniqueidToLinkedid[$uniqueid]);
     }
 );
 
-// 4. HangupEvent - канал завершён (только для неудачных Originate, которые НЕ обработаны DialEndEvent)
+// 5. VarSetEvent (CallMeFULLFNAME) - получение URL записи для Originate
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        $uniqueid = $event->getKey("Uniqueid");
+        $relativePath = $event->getValue();
+        
+        // Находим linkedid через маппинг
+        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+        
+        if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+            // Сохраняем URL записи (если еще не сохранен)
+            if (empty($globalsObj->originateCalls[$linkedid]['record_url'])) {
+                $globalsObj->originateCalls[$linkedid]['record_url'] = "http://195.98.170.206/continuous/" . $relativePath;
+                $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
+                
+                $helper->writeToLog([
+                    'uniqueid' => $uniqueid,
+                    'linkedid' => $linkedid,
+                    'record_url' => $globalsObj->originateCalls[$linkedid]['record_url']
+                ], 'ORIGINATE: Recording URL received');
+            }
+        }
+    },
+    function (EventMessage $event) use ($globalsObj) {
+        $uniqueid = $event->getKey("Uniqueid");
+        return $event instanceof VarSetEvent 
+            && $event->getVariableName() === 'CallMeFULLFNAME'
+            && isset($globalsObj->uniqueidToLinkedid[$uniqueid]);
+    }
+);
+
+// 6. HangupEvent - завершение канала (ГЛАВНЫЙ обработчик завершения звонка)
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
         $cause = $event->getKey("Cause");
         
-        // ТОЛЬКО если вызов ЕЩЁ в массиве (не обработан DialEndEvent)
-        if (isset($globalsObj->originateCalls[$uniqueid])) {
-            $data = $globalsObj->originateCalls[$uniqueid];
+        // Находим linkedid через маппинг
+        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+        
+        if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+            $data = $globalsObj->originateCalls[$linkedid];
             
-            // Завершаем карточку на основе HangupCause
-            $statusCode = $helper->getStatusCodeFromCause($cause);
+            // Сохраняем последний HangupCause
+            $globalsObj->originateCalls[$linkedid]['last_hangup_cause'] = $cause;
+            $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
             
-            // Только если не нормальное завершение (16 - Normal Clearing обрабатывается в DialEndEvent)
-            if ($cause != '16') {
-                $finishResult = $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
+            // Удаляем ЭТОТ канал из списка
+            unset($globalsObj->originateCalls[$linkedid]['channels'][$uniqueid]);
+            unset($globalsObj->uniqueidToLinkedid[$uniqueid]);
+            
+            $remainingChannels = count($globalsObj->originateCalls[$linkedid]['channels']);
+            
+            $helper->writeToLog([
+                'uniqueid' => $uniqueid,
+                'linkedid' => $linkedid,
+                'cause' => $cause,
+                'causeText' => $helper->getHangupCauseText($cause),
+                'remaining_channels' => $remainingChannels
+            ], 'ORIGINATE: Channel hangup');
+            
+            // Если ВСЕ каналы завершены - финишируем звонок
+            if (empty($globalsObj->originateCalls[$linkedid]['channels'])) {
+                $statusCode = $helper->determineOriginateStatusCode($data);
+                $duration = $helper->calculateOriginateDuration($data);
+                
+                $finishResult = $helper->finishCall($data['call_id'], $data['intNum'], $duration, $statusCode);
                 
                 $helper->writeToLog([
-                    'uniqueid' => $uniqueid,
+                    'linkedid' => $linkedid,
                     'call_id' => $data['call_id'],
-                    'cause' => $cause,
-                    'causeText' => $helper->getHangupCauseText($cause),
+                    'intNum' => $data['intNum'],
+                    'duration' => $duration,
                     'statusCode' => $statusCode,
+                    'answered' => $data['answered'],
                     'finishResult' => $finishResult
-                ], 'Originate: Hangup with error - finishing call');
-            } else {
-                $helper->writeToLog([
-                    'uniqueid' => $uniqueid,
-                    'call_id' => $data['call_id'],
-                    'cause' => $cause,
-                    'causeText' => $helper->getHangupCauseText($cause)
-                ], 'Originate: Normal hangup - already handled by DialEndEvent');
+                ], 'ORIGINATE: All channels closed - finishing call in Bitrix24');
+                
+                // Асинхронная загрузка записи если есть
+                if (!empty($data['record_url'])) {
+                    $uploadCmd = sprintf(
+                        'php %s/upload_recording_async.php %s %s %s %s %s > /dev/null 2>&1 &',
+                        __DIR__,
+                        escapeshellarg($data['call_id']),
+                        escapeshellarg($data['record_url']),
+                        escapeshellarg($data['intNum']),
+                        escapeshellarg($duration),
+                        escapeshellarg('ANSWERED')
+                    );
+                    exec($uploadCmd);
+                    
+                    $helper->writeToLog([
+                        'call_id' => $data['call_id'],
+                        'url' => $data['record_url']
+                    ], 'ORIGINATE: Started async upload');
+                }
+                
+                unset($globalsObj->originateCalls[$linkedid]);
             }
-            
-            // В любом случае удаляем из отслеживания
-            unset($globalsObj->originateCalls[$uniqueid]);
         }
     },
     function (EventMessage $event) use ($globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
         return $event instanceof HangupEvent 
-            && isset($globalsObj->originateCalls[$uniqueid]);
+            && isset($globalsObj->uniqueidToLinkedid[$uniqueid]);
     }
 );
 
@@ -736,9 +860,73 @@ function check_to_remove_bu_holdtimeout($globalsObj) {
     }
 }
 
+/**
+ * Fallback-механизм: проверка "зависших" Originate-вызовов
+ * Завершает вызовы для которых не пришли события от Asterisk
+ */
+function checkOriginateHealthy($globalsObj, $helper) {
+    $now = time();
+    
+    foreach ($globalsObj->originateCalls as $linkedId => $data) {
+        // Пропускаем активные звонки (события приходят)
+        if ($now - $data['last_activity'] < 30) {
+            continue;
+        }
+        
+        // Неотвеченный вызов висит более 10 минут
+        if (!$data['answered'] && ($now - $data['created_at']) > 600) {
+            $helper->writeToLog([
+                'linkedid' => $linkedId,
+                'call_id' => $data['call_id'],
+                'age_seconds' => $now - $data['created_at'],
+                'reason' => 'Unanswered call timeout (10 minutes)'
+            ], 'FALLBACK: Force finishing timeout call');
+            
+            $helper->finishCall($data['call_id'], $data['intNum'], 0, 304);
+            
+            // Очистка маппингов
+            foreach ($data['channels'] as $uid => $channelData) {
+                unset($globalsObj->uniqueidToLinkedid[$uid]);
+            }
+            unset($globalsObj->originateCalls[$linkedId]);
+            continue;
+        }
+        
+        // Нет активности более 30 секунд (события должны приходить постоянно)
+        $helper->writeToLog([
+            'linkedid' => $linkedId,
+            'call_id' => $data['call_id'],
+            'inactive_seconds' => $now - $data['last_activity'],
+            'remaining_channels' => count($data['channels']),
+            'reason' => 'No activity for 30+ seconds - finishing call'
+        ], 'FALLBACK: Force finishing inactive call');
+        
+        $statusCode = $helper->determineOriginateStatusCode($data);
+        $duration = $helper->calculateOriginateDuration($data);
+        
+        $helper->finishCall($data['call_id'], $data['intNum'], $duration, $statusCode);
+        
+        // Очистка маппингов
+        foreach ($data['channels'] as $uid => $channelData) {
+            unset($globalsObj->uniqueidToLinkedid[$uid]);
+        }
+        unset($globalsObj->originateCalls[$linkedId]);
+    }
+}
+
+// Переменная для отслеживания времени последней проверки Originate
+$lastOriginateHealthCheck = 0;
+
 while(true) {
     $pamiClient->process();
     check_to_remove_bu_holdtimeout($globalsObj);
+    
+    // Проверка "зависших" Originate-вызовов каждые 15 секунд
+    if (time() - $lastOriginateHealthCheck > 15) {
+        checkOriginateHealthy($globalsObj, $helper);
+        $lastOriginateHealthCheck = time();
+    }
+    
     usleep($helper->getConfig('listener_timeout'));
 }
 $pamiClient->ClosePAMIClient($pamiClient);

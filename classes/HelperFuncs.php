@@ -203,6 +203,50 @@ class HelperFuncs {
 	}
 
 	/**
+	 * Determine status code for Originate call based on call data
+	 *
+	 * @param array $callData Originate call data from originateCalls[linkedId]
+	 *
+	 * @return int Bitrix24 status code
+	 */
+	public function determineOriginateStatusCode($callData){
+		// Если был ответ и есть время ответа
+		if (!empty($callData['answered']) && !empty($callData['answer_time'])) {
+			$duration = time() - $callData['answer_time'];
+			if ($duration > 0) {
+				return 200; // Успешный разговор
+			}
+		}
+		
+		// На основе последнего DialStatus
+		if (!empty($callData['last_dialstatus'])) {
+			return $this->getStatusCodeFromDialStatus($callData['last_dialstatus']);
+		}
+		
+		// На основе последнего HangupCause
+		if (!empty($callData['last_hangup_cause'])) {
+			return $this->getStatusCodeFromCause($callData['last_hangup_cause']);
+		}
+		
+		// По умолчанию - нет ответа
+		return 304;
+	}
+
+	/**
+	 * Calculate duration for Originate call
+	 *
+	 * @param array $callData Originate call data from originateCalls[linkedId]
+	 *
+	 * @return int Duration in seconds
+	 */
+	public function calculateOriginateDuration($callData){
+		if (!empty($callData['answered']) && !empty($callData['answer_time'])) {
+			return time() - $callData['answer_time'];
+		}
+		return 0;
+	}
+
+	/**
 	 * Finish call in Bitrix24 without recording (immediate)
 	 *
 	 * @param string $call_id
