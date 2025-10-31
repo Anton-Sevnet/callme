@@ -866,7 +866,7 @@ $pamiClient->registerEventListener(
         file_put_contents(getcwd() . '/logs/full.log', $log, FILE_APPEND);
     },function (EventMessage $event) use ($globalsObj) {
 
-    return True;
+    return false;
 }
 );
 
