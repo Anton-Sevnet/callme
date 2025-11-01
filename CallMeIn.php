@@ -516,6 +516,15 @@ $pamiClient->registerEventListener(
                 $helper->writeToLog($finishResult, 'Call finished immediately (without record)');
                 echo "call finished immediately in B24, status: $statusCode\n";
                 
+                // СКРЫВАЕМ карточку звонка для пользователя
+                $hideResult = $helper->hideInputCall($CallIntNum, $call_id);
+                $helper->writeToLog(array(
+                    'intNum' => $CallIntNum,
+                    'call_id' => $call_id,
+                    'hideResult' => $hideResult
+                ), 'HangupEvent: Card hidden for user');
+                echo "card hidden for intNum: $CallIntNum\n";
+                
                 // Upload with async background process to avoid blocking main CallMeIn process
                 $uploadCmd = sprintf(
                     'php %s/upload_recording_async.php %s %s %s %s %s > /dev/null 2>&1 &',
@@ -734,6 +743,17 @@ $pamiClient->registerEventListener(
                     'finishResult' => $finishResult
                 ], 'ORIGINATE: External dial FAILED - finishing call immediately');
                 
+                // СКРЫВАЕМ карточку звонка для пользователя
+                if (!empty($data['intNum']) && !empty($data['call_id'])) {
+                    $hideResult = $helper->hideInputCall($data['intNum'], $data['call_id']);
+                    $helper->writeToLog([
+                        'intNum' => $data['intNum'],
+                        'call_id' => $data['call_id'],
+                        'hideResult' => $hideResult
+                    ], 'ORIGINATE: Card hidden (dial failed)');
+                    echo "ORIGINATE: card hidden for intNum: {$data['intNum']} (dial failed)\n";
+                }
+                
                 // Очистка всех маппингов
                 foreach ($data['channels'] as $uid => $channelData) {
                     unset($globalsObj->uniqueidToLinkedid[$uid]);
@@ -827,6 +847,17 @@ $pamiClient->registerEventListener(
                     'finishResult' => $finishResult
                 ], 'ORIGINATE: All channels closed - finishing call in Bitrix24');
                 
+                // СКРЫВАЕМ карточку звонка для пользователя
+                if (!empty($data['intNum']) && !empty($data['call_id'])) {
+                    $hideResult = $helper->hideInputCall($data['intNum'], $data['call_id']);
+                    $helper->writeToLog([
+                        'intNum' => $data['intNum'],
+                        'call_id' => $data['call_id'],
+                        'hideResult' => $hideResult
+                    ], 'ORIGINATE: Card hidden for user');
+                    echo "ORIGINATE: card hidden for intNum: {$data['intNum']}\n";
+                }
+                
                 // Асинхронная загрузка записи если есть
                 if (!empty($data['record_url'])) {
                     $uploadCmd = sprintf(
@@ -904,6 +935,13 @@ function checkOriginateHealthy($globalsObj, $helper) {
             
             $helper->finishCall($data['call_id'], $data['intNum'], 0, 304);
             
+            // СКРЫВАЕМ карточку
+            if (!empty($data['intNum']) && !empty($data['call_id'])) {
+                $helper->hideInputCall($data['intNum'], $data['call_id']);
+                $helper->writeToLog(['intNum' => $data['intNum'], 'call_id' => $data['call_id']], 
+                    'FALLBACK: Card hidden (timeout)');
+            }
+            
             // Очистка маппингов
             foreach ($data['channels'] as $uid => $channelData) {
                 unset($globalsObj->uniqueidToLinkedid[$uid]);
@@ -925,6 +963,13 @@ function checkOriginateHealthy($globalsObj, $helper) {
         $duration = $helper->calculateOriginateDuration($data);
         
         $helper->finishCall($data['call_id'], $data['intNum'], $duration, $statusCode);
+        
+        // СКРЫВАЕМ карточку
+        if (!empty($data['intNum']) && !empty($data['call_id'])) {
+            $helper->hideInputCall($data['intNum'], $data['call_id']);
+            $helper->writeToLog(['intNum' => $data['intNum'], 'call_id' => $data['call_id']], 
+                'FALLBACK: Card hidden (inactive)');
+        }
         
         // Очистка маппингов
         foreach ($data['channels'] as $uid => $channelData) {
