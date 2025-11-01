@@ -326,10 +326,19 @@ $pamiClient->registerEventListener(
 
     },function (EventMessage $event) use ($globalsObj) {
     $uniqueid = $event->getKey("UniqueID");
+    
+    // Проверяем что это НЕ реальный Originate-вызов
+    $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+    $isRealOriginate = false;
+    
+    if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+        $isRealOriginate = $globalsObj->originateCalls[$linkedid]['is_originate'] ?? false;
+    }
+    
     return
         ($event instanceof DialBeginEvent || $event->getKey("Event") == "Dial")
         // НЕ Originate-вызов (те обрабатываются отдельно)
-        && !isset($globalsObj->uniqueidToLinkedid[$uniqueid])
+        && !$isRealOriginate
         ;
 }
 );
@@ -434,12 +443,21 @@ $pamiClient->registerEventListener(
             },
             function (EventMessage $event) use ($globalsObj) {
                     $uniqueid = $event->getKey("UniqueID");
+                    
+                    // Проверяем что это НЕ реальный Originate-вызов
+                    $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+                    $isRealOriginate = false;
+                    
+                    if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+                        $isRealOriginate = $globalsObj->originateCalls[$linkedid]['is_originate'] ?? false;
+                    }
+                    
                     return
                         $event instanceof DialEndEvent
                         //проверяем входит ли событие в массив с uniqueid внешних звонков
                         && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids)
                         // НЕ Originate-вызов (те обрабатываются отдельно)
-                        && !isset($globalsObj->uniqueidToLinkedid[$uniqueid]);
+                        && !$isRealOriginate;
 
                 }
         );
@@ -554,16 +572,31 @@ $pamiClient->registerEventListener(
                 $helper->removeItemFromArray($globalsObj->Dispositions,$callLinkedid,'key');
                 $helper->removeItemFromArray($globalsObj->calls,$callLinkedid,'key');
                 $helper->removeItemFromArray($globalsObj->Onhold,$event->getChannel(),'key');
+                
+                // Очищаем маппинг linkedid если он был создан для обычного звонка
+                if (isset($globalsObj->uniqueidToLinkedid[$callLinkedid])) {
+                    unset($globalsObj->uniqueidToLinkedid[$callLinkedid]);
+                }
+                
                 echo "\n-------------------------------------------------------------------\n\r";
                 echo "\n\r";
             },function (EventMessage $event) use ($globalsObj) {
                     $uniqueid = $event->getKey("Uniqueid");
+                    
+                    // Проверяем что это НЕ реальный Originate-вызов
+                    $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+                    $isRealOriginate = false;
+                    
+                    if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+                        $isRealOriginate = $globalsObj->originateCalls[$linkedid]['is_originate'] ?? false;
+                    }
+                    
                     return
                         $event instanceof HangupEvent
                         //проверяем на вхождение в массив
                         && in_array($uniqueid, $globalsObj->uniqueids)
                         // НЕ Originate-вызов (те обрабатываются отдельно)
-                        && !isset($globalsObj->uniqueidToLinkedid[$uniqueid])
+                        && !$isRealOriginate
                         ;
                 }
         );
@@ -572,47 +605,22 @@ $pamiClient->registerEventListener(
 // ОБРАБОТЧИК: Originate-вызовы (с использованием Linkedid)
 // ==========================================
 
-// 1. VarSetEvent (CallMeLINKEDID) - регистрация каждого канала звонка
+// 1. VarSetEvent (CallMeLINKEDID) - ТОЛЬКО создаём маппинг, НЕ создаём структуру
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
         $linkedid = $event->getValue(); // Значение переменной = Linkedid
         $channel = $event->getChannel();
         
-        // Создать запись для звонка если это первый канал
-        if (!isset($globalsObj->originateCalls[$linkedid])) {
-            $globalsObj->originateCalls[$linkedid] = [
-                'channels' => [],
-                'call_id' => null,
-                'intNum' => null,
-                'is_originate' => false,
-                'answered' => false,
-                'answer_time' => null,
-                'last_dialstatus' => null,
-                'last_hangup_cause' => null,
-                'created_at' => time(),
-                'last_activity' => time()
-            ];
-        }
-        
-        // Добавить канал в список
-        $globalsObj->originateCalls[$linkedid]['channels'][$uniqueid] = [
-            'channel' => $channel,
-            'added_at' => time()
-        ];
-        
-        // Создать маппинг для быстрого поиска
+        // ТОЛЬКО создаём маппинг для быстрого поиска
+        // Структура originateCalls создаётся ТОЛЬКО при получении IS_CALLME_ORIGINATE
         $globalsObj->uniqueidToLinkedid[$uniqueid] = $linkedid;
-        
-        // Обновить время активности
-        $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
         
         $helper->writeToLog([
             'uniqueid' => $uniqueid,
             'linkedid' => $linkedid,
-            'channel' => $channel,
-            'total_channels' => count($globalsObj->originateCalls[$linkedid]['channels'])
-        ], 'ORIGINATE-LINKEDID: Channel registered');
+            'channel' => $channel
+        ], 'LINKEDID: Mapping created (waiting for Originate marker)');
     },
     function (EventMessage $event) {
         return $event instanceof VarSetEvent 
@@ -620,48 +628,22 @@ $pamiClient->registerEventListener(
     }
 );
 
-// 2. VarSetEvent (IS_CALLME_ORIGINATE) - маркер Originate-вызова
+// 2. VarSetEvent (IS_CALLME_ORIGINATE) - маркер Originate-вызова, ЗДЕСЬ создаём структуру
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
-        
-        // Если уже есть маппинг (CallMeLINKEDID пришел раньше)
-        if (isset($globalsObj->uniqueidToLinkedid[$uniqueid])) {
-            $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid];
-            if (isset($globalsObj->originateCalls[$linkedid])) {
-                $globalsObj->originateCalls[$linkedid]['is_originate'] = true;
-                
-                $helper->writeToLog([
-                    'uniqueid' => $uniqueid,
-                    'linkedid' => $linkedid
-                ], 'ORIGINATE: Marked as Originate call');
-            }
-        }
-    },
-    function (EventMessage $event) {
-        return $event instanceof VarSetEvent 
-            && $event->getVariableName() === 'IS_CALLME_ORIGINATE';
-    }
-);
-
-// 3. VarSetEvent (CallMeCALL_ID) - получение call_id от Bitrix24
-$pamiClient->registerEventListener(
-    function (EventMessage $event) use ($helper, $globalsObj) {
-        $uniqueid = $event->getKey("Uniqueid");
-        $call_id = $event->getValue();
         $channel = $event->getChannel();
         
         // Находим linkedid через маппинг, или используем uniqueid как linkedid
-        // (для первого канала Originate uniqueid == linkedid)
         $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? $uniqueid;
         
-        // Инициализируем структуру если её нет
+        // СОЗДАЁМ структуру originateCalls ТОЛЬКО для реальных Originate-звонков
         if (!isset($globalsObj->originateCalls[$linkedid])) {
             $globalsObj->originateCalls[$linkedid] = [
                 'channels' => [],
                 'call_id' => null,
                 'intNum' => null,
-                'is_originate' => false,
+                'is_originate' => true,
                 'answered' => false,
                 'answer_time' => null,
                 'last_dialstatus' => null,
@@ -674,6 +656,50 @@ $pamiClient->registerEventListener(
             if (!isset($globalsObj->uniqueidToLinkedid[$uniqueid])) {
                 $globalsObj->uniqueidToLinkedid[$uniqueid] = $linkedid;
             }
+        } else {
+            // Если структура уже есть - просто помечаем как Originate
+            $globalsObj->originateCalls[$linkedid]['is_originate'] = true;
+        }
+        
+        // Добавляем канал в список
+        $globalsObj->originateCalls[$linkedid]['channels'][$uniqueid] = [
+            'channel' => $channel,
+            'added_at' => time()
+        ];
+        $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
+        
+        $helper->writeToLog([
+            'uniqueid' => $uniqueid,
+            'linkedid' => $linkedid,
+            'channel' => $channel,
+            'total_channels' => count($globalsObj->originateCalls[$linkedid]['channels'])
+        ], 'ORIGINATE: Marked as Originate call and registered');
+    },
+    function (EventMessage $event) {
+        return $event instanceof VarSetEvent 
+            && $event->getVariableName() === 'IS_CALLME_ORIGINATE';
+    }
+);
+
+// 3. VarSetEvent (CallMeCALL_ID) - получение call_id от Bitrix24 (ТОЛЬКО для Originate!)
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        $uniqueid = $event->getKey("Uniqueid");
+        $call_id = $event->getValue();
+        $channel = $event->getChannel();
+        
+        // Находим linkedid через маппинг
+        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? $uniqueid;
+        
+        // КРИТИЧНО: Работаем ТОЛЬКО если это реальный Originate-звонок
+        if (!isset($globalsObj->originateCalls[$linkedid])) {
+            $helper->writeToLog([
+                'uniqueid' => $uniqueid,
+                'linkedid' => $linkedid,
+                'call_id' => $call_id,
+                'reason' => 'Not an Originate call - skipping'
+            ], 'ORIGINATE: CallMeCALL_ID received but NOT Originate - ignored');
+            return;
         }
         
         // Извлекаем внутренний номер из канала (SIP/219 → 219)
@@ -691,8 +717,7 @@ $pamiClient->registerEventListener(
             'linkedid' => $linkedid,
             'call_id' => $call_id,
             'intNum' => $intNum,
-            'channel' => $channel,
-            'mapping_created' => !isset($globalsObj->uniqueidToLinkedid[$uniqueid])
+            'channel' => $channel
         ], 'ORIGINATE: Tracking started with call_id');
     },
     function (EventMessage $event) {
@@ -835,27 +860,44 @@ $pamiClient->registerEventListener(
                 $statusCode = $helper->determineOriginateStatusCode($data);
                 $duration = $helper->calculateOriginateDuration($data);
                 
-                $finishResult = $helper->finishCall($data['call_id'], $data['intNum'], $duration, $statusCode);
+                // FALLBACK: Если call_id/intNum пустые - пробуем найти в обычных массивах
+                $call_id = $data['call_id'];
+                $intNum = $data['intNum'];
+                
+                if (empty($call_id) && isset($globalsObj->calls[$linkedid])) {
+                    $call_id = $globalsObj->calls[$linkedid];
+                    $helper->writeToLog(['linkedid' => $linkedid, 'call_id' => $call_id], 
+                        'ORIGINATE FALLBACK: Found call_id in regular calls array');
+                }
+                
+                if (empty($intNum) && isset($globalsObj->intNums[$linkedid])) {
+                    $intNum = $globalsObj->intNums[$linkedid];
+                    $helper->writeToLog(['linkedid' => $linkedid, 'intNum' => $intNum], 
+                        'ORIGINATE FALLBACK: Found intNum in regular intNums array');
+                }
+                
+                $finishResult = $helper->finishCall($call_id, $intNum, $duration, $statusCode);
                 
                 $helper->writeToLog([
                     'linkedid' => $linkedid,
-                    'call_id' => $data['call_id'],
-                    'intNum' => $data['intNum'],
+                    'call_id' => $call_id,
+                    'intNum' => $intNum,
                     'duration' => $duration,
                     'statusCode' => $statusCode,
                     'answered' => $data['answered'],
-                    'finishResult' => $finishResult
+                    'finishResult' => $finishResult,
+                    'used_fallback' => (empty($data['call_id']) || empty($data['intNum']))
                 ], 'ORIGINATE: All channels closed - finishing call in Bitrix24');
                 
-                // СКРЫВАЕМ карточку звонка для пользователя
-                if (!empty($data['intNum']) && !empty($data['call_id'])) {
-                    $hideResult = $helper->hideInputCall($data['intNum'], $data['call_id']);
+                // СКРЫВАЕМ карточку звонка для пользователя (используем fallback значения)
+                if (!empty($intNum) && !empty($call_id)) {
+                    $hideResult = $helper->hideInputCall($intNum, $call_id);
                     $helper->writeToLog([
-                        'intNum' => $data['intNum'],
-                        'call_id' => $data['call_id'],
+                        'intNum' => $intNum,
+                        'call_id' => $call_id,
                         'hideResult' => $hideResult
                     ], 'ORIGINATE: Card hidden for user');
-                    echo "ORIGINATE: card hidden for intNum: {$data['intNum']}\n";
+                    echo "ORIGINATE: card hidden for intNum: $intNum\n";
                 }
                 
                 // Асинхронная загрузка записи если есть
