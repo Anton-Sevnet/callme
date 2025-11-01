@@ -315,33 +315,39 @@ $pamiClient->registerEventListener(
             return;
         }
         
+        // КРИТИЧЕСКОЕ: Игнорируем события BRIDGEPEER между внутренними каналами
+        // Если bridgedPeer - это внутренний SIP канал (не внешний), это просто bridge между внутренними
+        // Такие события приходят при звонке одного внутреннего на другого, но это НЕ transfer внешнего звонка
+        if (strpos($bridgedPeer, 'SIP/') === 0) {
+            // Проверяем, не является ли это внешним каналом из transferHistory
+            $isExternalChannel = false;
+            foreach ($globalsObj->transferHistory as $transferData) {
+                $externalChannelBase = preg_replace('/-[^-]+$/', '', $transferData['externalChannel']);
+                $bridgedPeerBase = preg_replace('/-[^-]+$/', '', $bridgedPeer);
+                if ($externalChannelBase === $bridgedPeerBase || $transferData['externalChannel'] === $bridgedPeer) {
+                    $isExternalChannel = true;
+                    break;
+                }
+            }
+            
+            // Если bridgedPeer - внутренний SIP канал и НЕ внешний канал, пропускаем
+            if (!$isExternalChannel) {
+                return; // Это bridge между внутренними (например SIP/219 <-> SIP/220), не transfer
+            }
+        }
+        
         // Проверяем что bridgedPeer указывает на внешний канал из transferHistory
-        // ИЛИ на промежуточный канал (например SIP/219), который связан с внешним звонком
         foreach ($globalsObj->transferHistory as $externalUniqueid => $transferData) {
             // Проверяем что звонок ещё активен
             if (!isset($globalsObj->calls[$externalUniqueid])) {
                 continue;
             }
             
-            $isTransfer = false;
-            
-            // Вариант 1: bridgedPeer напрямую указывает на внешний канал
+            // Проверяем что bridgedPeer указывает на внешний канал
             $externalChannelBase = preg_replace('/-[^-]+$/', '', $transferData['externalChannel']);
             $bridgedPeerBase = preg_replace('/-[^-]+$/', '', $bridgedPeer);
-            if ($externalChannelBase === $bridgedPeerBase || $transferData['externalChannel'] === $bridgedPeer) {
-                $isTransfer = true;
-            }
-            
-            // Вариант 2: bridgedPeer указывает на предыдущий внутренний канал (промежуточный transfer)
-            // Проверяем что bridgedPeer содержит текущий внутренний номер из transferHistory
-            if (!$isTransfer && strpos($bridgedPeer, 'SIP/' . $transferData['currentIntNum'] . '-') === 0) {
-                // Это transfer через промежуточный канал (например 220 получает BRIDGEPEER = SIP/219-xxx)
-                // когда 219 был текущим внутренним в transferHistory
-                $isTransfer = true;
-            }
-            
-            if (!$isTransfer) {
-                continue;
+            if ($externalChannelBase !== $bridgedPeerBase && $transferData['externalChannel'] !== $bridgedPeer) {
+                continue; // Это не внешний канал для данного звонка
             }
             
             // Если новый внутренний отличается от текущего - это transfer
