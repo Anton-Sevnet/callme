@@ -22,6 +22,7 @@ use PAMI\Message\Event\DialEndEvent;
 use PAMI\Message\Event\NewchannelEvent;
 use PAMI\Message\Event\VarSetEvent;
 use PAMI\Message\Event\HangupEvent;
+use PAMI\Message\Event\BridgeEvent;
 use PAMI\Message\Action\ActionMessage;
 use PAMI\Message\Action\SetVarAction;
 /*
@@ -462,6 +463,109 @@ $pamiClient->registerEventListener(
                 }
         );
 
+//обрабатываем BridgeEvent события для отслеживания transfer звонков
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        // Проверяем что это BridgeEvent со статусом Link
+        if (!($event instanceof BridgeEvent) || $event->getBridgeState() !== 'Link') {
+            return;
+        }
+        
+        // Игнорируем Bridge между внутренними абонентами (промежуточный этап transfer)
+        if ($helper->isInternalToInternalBridge($event)) {
+            return; // Не логируем, просто пропускаем
+        }
+        
+        // Проверяем что это Bridge внешний ↔ внутренний
+        if (!$helper->isExternalToInternalBridge($event)) {
+            return; // Не логируем, просто пропускаем
+        }
+        
+        // Извлекаем данные Bridge
+        $bridgeData = $helper->extractBridgeData($event);
+        if (!$bridgeData) {
+            return; // Не удалось извлечь данные
+        }
+        
+        $externalUniqueid = $bridgeData['externalUniqueid'];
+        $internalCallerID = $bridgeData['internalCallerID'];
+        
+        // ЗАЩИТА: Проверяем что звонок ещё не завершен
+        if (!isset($globalsObj->calls[$externalUniqueid])) {
+            // Звонок уже завершен (HangupEvent уже обработан), пропускаем
+            return; // Не логируем
+        }
+        
+        $call_id = $globalsObj->calls[$externalUniqueid];
+        $newIntNum = substr($internalCallerID, 0, 4); // Обрезаем до 4 цифр как внутренний номер
+        
+        // Проверяем есть ли уже запись в transferHistory
+        if (!isset($globalsObj->transferHistory[$externalUniqueid])) {
+            // Первое соединение - создаём запись
+            $globalsObj->transferHistory[$externalUniqueid] = [
+                'call_id' => $call_id,
+                'externalChannel' => $bridgeData['externalChannel'],
+                'currentIntNum' => $newIntNum,
+                'history' => []
+            ];
+            
+            $helper->writeToLog([
+                'event' => 'Bridge',
+                'type' => 'initial_connection',
+                'externalUniqueid' => $externalUniqueid,
+                'internalIntNum' => $newIntNum,
+                'call_id' => $call_id,
+                'action' => 'transferHistory created'
+            ], 'TRANSFER: Initial connection tracked');
+            
+        } else {
+            // Transfer на нового абонента
+            $oldIntNum = $globalsObj->transferHistory[$externalUniqueid]['currentIntNum'];
+            
+            // Проверяем что действительно transfer (новый абонент отличается)
+            if ($newIntNum == $oldIntNum) {
+                return; // Не transfer, просто повторное событие
+            }
+            
+            // Скрываем карточку у старого абонента
+            $hideResult = $helper->hideInputCall($oldIntNum, $call_id);
+            
+            // Показываем карточку новому абоненту
+            $showResult = $helper->showInputCall($newIntNum, $call_id);
+            
+            // Обновляем transferHistory
+            $globalsObj->transferHistory[$externalUniqueid]['currentIntNum'] = $newIntNum;
+            $globalsObj->transferHistory[$externalUniqueid]['history'][] = [
+                'from' => $oldIntNum,
+                'to' => $newIntNum,
+                'timestamp' => time()
+            ];
+            
+            // Обновляем маппинг для корректного завершения звонка
+            $globalsObj->intNums[$externalUniqueid] = $newIntNum;
+            
+            $helper->writeToLog([
+                'event' => 'Bridge',
+                'type' => 'transfer',
+                'externalUniqueid' => $externalUniqueid,
+                'fromIntNum' => $oldIntNum,
+                'toIntNum' => $newIntNum,
+                'call_id' => $call_id,
+                'action' => 'card moved',
+                'hideResult' => $hideResult,
+                'showResult' => $showResult,
+                'transferCount' => count($globalsObj->transferHistory[$externalUniqueid]['history'])
+            ], 'TRANSFER: Card moved between users');
+            
+            echo "TRANSFER: Card moved from $oldIntNum to $newIntNum for call_id: $call_id\n";
+        }
+    },
+    function (EventMessage $event) {
+        // Фильтр: только BridgeEvent со статусом Link
+        return $event instanceof BridgeEvent && $event->getBridgeState() === 'Link';
+    }
+);
+
 //обрабатываем HangupEvent события, отдаем информацию о звонке и url его записи в битрикс
 $pamiClient->registerEventListener(
             function (EventMessage $event) use ($callami, $helper, $globalsObj) {
@@ -502,12 +606,30 @@ $pamiClient->registerEventListener(
 
                 $CallDisposition = $globalsObj->Dispositions[$callLinkedid];
                 $call_id = $globalsObj->calls[$callLinkedid] ?? null;
-                $CallIntNum = $globalsObj->intNums[$callLinkedid];
                 
                 // FALLBACK: Если не нашли call_id - пропускаем обработку
                 if (empty($call_id)) {
                     $helper->writeToLog("No call_id for Uniqueid $callLinkedid, skipping HangupEvent", 'HangupEvent FALLBACK');
                     return;
+                }
+                
+                // Определяем ответственного: если был transfer - берём ПОСЛЕДНЕГО абонента
+                if (isset($globalsObj->transferHistory[$callLinkedid])) {
+                    // Был transfer - используем ПОСЛЕДНЕГО абонента (currentIntNum)
+                    $CallIntNum = $globalsObj->transferHistory[$callLinkedid]['currentIntNum'];
+                    
+                    $helper->writeToLog([
+                        'call_id' => $call_id,
+                        'originalIntNum' => isset($globalsObj->transferHistory[$callLinkedid]['history'][0]) 
+                            ? $globalsObj->transferHistory[$callLinkedid]['history'][0]['from'] 
+                            : $CallIntNum,
+                        'finalIntNum' => $CallIntNum,
+                        'transferCount' => count($globalsObj->transferHistory[$callLinkedid]['history']),
+                        'history' => $globalsObj->transferHistory[$callLinkedid]['history']
+                    ], 'HangupEvent: Final responsible user (last transfer) - "Кто последний тот и папа"');
+                } else {
+                    // Обычный звонок без transfer
+                    $CallIntNum = $globalsObj->intNums[$callLinkedid];
                 }
 
                 // логируем $callUniqueid, $FullFnameUrls, $calls, $Durations, $Dispositions
@@ -563,6 +685,11 @@ $pamiClient->registerEventListener(
                 ), 'HangupEvent: Started async upload');
                 
                 echo "async upload started \n";
+
+                // Очищаем transferHistory если был transfer
+                if (isset($globalsObj->transferHistory[$callLinkedid])) {
+                    unset($globalsObj->transferHistory[$callLinkedid]);
+                }
 
                 // удаляем из массивов тот вызов, который завершился
                 $helper->removeItemFromArray($globalsObj->uniqueids,$callLinkedid,'value');

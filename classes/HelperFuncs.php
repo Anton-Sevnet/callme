@@ -963,4 +963,93 @@ class HelperFuncs {
 		return null;
 	}
 
+	/**
+	 * Определить является ли Bridge событие соединением внешнего с внутренним абонентом
+	 *
+	 * @param object $bridgeEvent BridgeEvent
+	 * @return bool
+	 */
+	public function isExternalToInternalBridge($bridgeEvent) {
+		$callerID1 = $bridgeEvent->getCallerID1();
+		$callerID2 = $bridgeEvent->getCallerID2();
+		$channel1 = $bridgeEvent->getChannel1();
+		$channel2 = $bridgeEvent->getChannel2();
+		
+		// Проверяем длину CallerID (внешние номера >= 6 цифр, внутренние 3-4 цифры)
+		$callerID1Length = strlen(preg_replace('/\D/', '', $callerID1));
+		$callerID2Length = strlen(preg_replace('/\D/', '', $callerID2));
+		
+		// Проверяем тип канала (внешние: IAX2, SIP trunk обычно содержит IP или длинные имена)
+		$isChannel1External = (strpos($channel1, 'IAX2') !== false) || 
+		                       (strpos($channel1, 'SIP/') !== false && $callerID1Length >= 6);
+		$isChannel2External = (strpos($channel2, 'IAX2') !== false) || 
+		                       (strpos($channel2, 'SIP/') !== false && $callerID2Length >= 6);
+		
+		// Один канал внешний, другой внутренний
+		return ($isChannel1External && !$isChannel2External && $callerID2Length <= 4) ||
+		       (!$isChannel1External && $isChannel2External && $callerID1Length <= 4);
+	}
+
+	/**
+	 * Определить является ли Bridge событие соединением двух внутренних абонентов
+	 *
+	 * @param object $bridgeEvent BridgeEvent
+	 * @return bool
+	 */
+	public function isInternalToInternalBridge($bridgeEvent) {
+		$callerID1 = $bridgeEvent->getCallerID1();
+		$callerID2 = $bridgeEvent->getCallerID2();
+		
+		$callerID1Length = strlen(preg_replace('/\D/', '', $callerID1));
+		$callerID2Length = strlen(preg_replace('/\D/', '', $callerID2));
+		
+		// Оба CallerID короткие (3-4 цифры) = внутренние абоненты
+		return $callerID1Length <= 4 && $callerID2Length <= 4;
+	}
+
+	/**
+	 * Извлечь данные из Bridge события для обработки transfer
+	 *
+	 * @param object $bridgeEvent BridgeEvent
+	 * @return array|null ['externalChannel', 'externalUniqueid', 'externalCallerID', 'internalChannel', 'internalUniqueid', 'internalCallerID']
+	 */
+	public function extractBridgeData($bridgeEvent) {
+		$callerID1 = $bridgeEvent->getCallerID1();
+		$callerID2 = $bridgeEvent->getCallerID2();
+		$channel1 = $bridgeEvent->getChannel1();
+		$channel2 = $bridgeEvent->getChannel2();
+		$uniqueID1 = $bridgeEvent->getUniqueID1();
+		$uniqueID2 = $bridgeEvent->getUniqueID2();
+		
+		$callerID1Length = strlen(preg_replace('/\D/', '', $callerID1));
+		$callerID2Length = strlen(preg_replace('/\D/', '', $callerID2));
+		
+		$isChannel1External = (strpos($channel1, 'IAX2') !== false) || 
+		                       (strpos($channel1, 'SIP/') !== false && $callerID1Length >= 6);
+		
+		if ($isChannel1External && $callerID2Length <= 4) {
+			// Channel1 - внешний, Channel2 - внутренний
+			return [
+				'externalChannel' => $channel1,
+				'externalUniqueid' => $uniqueID1,
+				'externalCallerID' => $callerID1,
+				'internalChannel' => $channel2,
+				'internalUniqueid' => $uniqueID2,
+				'internalCallerID' => $callerID2
+			];
+		} elseif (!$isChannel1External && $callerID1Length <= 4 && $callerID2Length >= 6) {
+			// Channel1 - внутренний, Channel2 - внешний
+			return [
+				'externalChannel' => $channel2,
+				'externalUniqueid' => $uniqueID2,
+				'externalCallerID' => $callerID2,
+				'internalChannel' => $channel1,
+				'internalUniqueid' => $uniqueID1,
+				'internalCallerID' => $callerID1
+			];
+		}
+		
+		return null;
+	}
+
 }
