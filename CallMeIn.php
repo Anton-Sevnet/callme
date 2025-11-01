@@ -294,13 +294,15 @@ $pamiClient->registerEventListener(
         $bridgedPeer = $event->getValue(); // Канал с которым соединён
         $uniqueid = $event->getKey("Uniqueid");
         
-        // Определяем является ли текущий канал внутренним
-        $callerID = $event->getCallerIDNum();
-        $callerIDLength = strlen(preg_replace('/\D/', '', $callerID));
-        
-        // Если это не внутренний канал (CallerID длинный или канал внешний) - пропускаем
-        if ($callerIDLength > 4 || strpos($channel, 'IAX2') !== false) {
+        // Если канал внешний (IAX2) - пропускаем (обрабатываем только внутренние)
+        if (strpos($channel, 'IAX2') !== false) {
             return;
+        }
+        
+        // Определяем является ли текущий канал внутренним через анализ канала
+        // Внутренние каналы имеют формат SIP/XXX-YYYY (где XXX - внутренний номер)
+        if (strpos($channel, 'SIP/') !== 0) {
+            return; // Не SIP канал, пропускаем
         }
         
         // Извлекаем внутренний номер из канала (например SIP/220-000026bd -> 220)
