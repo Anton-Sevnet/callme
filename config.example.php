@@ -74,6 +74,9 @@ return array(
     // Debug mode (enable logging)
     'CallMeDEBUG' => true,
     
+    // Full event log (logs ALL events to full.log, very verbose)
+    'enable_full_log' => false,
+    
     // Event listener timeout (microseconds)
     'listener_timeout' => 100000,  // 0.1 second
 );

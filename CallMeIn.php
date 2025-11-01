@@ -1176,18 +1176,23 @@ $pamiClient->registerEventListener(
     }
 );
 
-$pamiClient->registerEventListener(
-    function (EventMessage $event) use ($helper,$globalsObj, $callami) {
-        $log = "\n------------------------\n";
-        $log .= date("Y.m.d G:i:s") . "\n";
-        $log .= print_r($event->getRawContent()."\n\r", 1);
-        $log .= "\n------------------------\n";
-        file_put_contents(getcwd() . '/logs/full.log', $log, FILE_APPEND);
-    },function (EventMessage $event) use ($globalsObj) {
-
-    return false;
+// Full event log registration (controlled by config)
+$enableFullLog = $helper->getConfig('enable_full_log');
+if ($enableFullLog) {
+    $pamiClient->registerEventListener(
+        function (EventMessage $event) use ($helper,$globalsObj, $callami) {
+            $log = "\n------------------------\n";
+            $log .= date("Y.m.d G:i:s") . "\n";
+            $log .= print_r($event->getRawContent()."\n\r", 1);
+            $log .= "\n------------------------\n";
+            file_put_contents(getcwd() . '/logs/full.log', $log, FILE_APPEND);
+        },
+        function (EventMessage $event) {
+            // No filter - log all events when enabled
+            return true;
+        }
+    );
 }
-);
 
 function check_to_remove_bu_holdtimeout($globalsObj) {
     global $callami, $helper;
