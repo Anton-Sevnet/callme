@@ -283,6 +283,116 @@ $pamiClient->registerEventListener(
         }
 );
 
+//обрабатываем VarSetEvent для BRIDGEPEER - отслеживание transfer через изменение BRIDGEPEER
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        if ($event->getVariableName() !== 'BRIDGEPEER') {
+            return;
+        }
+        
+        $channel = $event->getChannel();
+        $bridgedPeer = $event->getValue(); // Канал с которым соединён
+        $uniqueid = $event->getKey("Uniqueid");
+        
+        // Определяем является ли текущий канал внутренним
+        $callerID = $event->getCallerIDNum();
+        $callerIDLength = strlen(preg_replace('/\D/', '', $callerID));
+        
+        // Если это не внутренний канал (CallerID длинный или канал внешний) - пропускаем
+        if ($callerIDLength > 4 || strpos($channel, 'IAX2') !== false) {
+            return;
+        }
+        
+        // Извлекаем внутренний номер из канала (например SIP/220-000026bd -> 220)
+        $intNum = null;
+        if (preg_match('/SIP\/(\d+)-/', $channel, $matches)) {
+            $intNum = substr($matches[1], 0, 4);
+        }
+        
+        if (!$intNum) {
+            return;
+        }
+        
+        // Проверяем что bridgedPeer указывает на внешний канал из transferHistory
+        // ИЛИ на промежуточный канал (например SIP/219), который связан с внешним звонком
+        foreach ($globalsObj->transferHistory as $externalUniqueid => $transferData) {
+            // Проверяем что звонок ещё активен
+            if (!isset($globalsObj->calls[$externalUniqueid])) {
+                continue;
+            }
+            
+            $isTransfer = false;
+            
+            // Вариант 1: bridgedPeer напрямую указывает на внешний канал
+            $externalChannelBase = preg_replace('/-[^-]+$/', '', $transferData['externalChannel']);
+            $bridgedPeerBase = preg_replace('/-[^-]+$/', '', $bridgedPeer);
+            if ($externalChannelBase === $bridgedPeerBase || $transferData['externalChannel'] === $bridgedPeer) {
+                $isTransfer = true;
+            }
+            
+            // Вариант 2: bridgedPeer указывает на предыдущий внутренний канал (промежуточный transfer)
+            // Проверяем что bridgedPeer содержит текущий внутренний номер из transferHistory
+            if (!$isTransfer && strpos($bridgedPeer, 'SIP/' . $transferData['currentIntNum'] . '-') === 0) {
+                // Это transfer через промежуточный канал (например 220 получает BRIDGEPEER = SIP/219-xxx)
+                // когда 219 был текущим внутренним в transferHistory
+                $isTransfer = true;
+            }
+            
+            if (!$isTransfer) {
+                continue;
+            }
+            
+            // Если новый внутренний отличается от текущего - это transfer
+            if ($transferData['currentIntNum'] != $intNum) {
+                $oldIntNum = $transferData['currentIntNum'];
+                $call_id = $transferData['call_id'];
+                
+                // Скрываем карточку у старого абонента
+                $hideResult = $helper->hideInputCall($oldIntNum, $call_id);
+                
+                // Показываем карточку новому абоненту
+                $showResult = $helper->showInputCall($intNum, $call_id);
+                
+                // Обновляем transferHistory
+                $globalsObj->transferHistory[$externalUniqueid]['currentIntNum'] = $intNum;
+                $globalsObj->transferHistory[$externalUniqueid]['history'][] = [
+                    'from' => $oldIntNum,
+                    'to' => $intNum,
+                    'timestamp' => time()
+                ];
+                
+                // Обновляем маппинг
+                $globalsObj->intNums[$externalUniqueid] = $intNum;
+                
+                $helper->writeToLog([
+                    'event' => 'VarSetEvent',
+                    'variable' => 'BRIDGEPEER',
+                    'type' => 'transfer_detected',
+                    'externalUniqueid' => $externalUniqueid,
+                    'externalChannel' => $transferData['externalChannel'],
+                    'bridgedPeer' => $bridgedPeer,
+                    'channel' => $channel,
+                    'fromIntNum' => $oldIntNum,
+                    'toIntNum' => $intNum,
+                    'call_id' => $call_id,
+                    'action' => 'card moved via BRIDGEPEER',
+                    'hideResult' => $hideResult,
+                    'showResult' => $showResult
+                ], 'TRANSFER: Card moved between users (detected via BRIDGEPEER)');
+                
+                echo "TRANSFER: Card moved from $oldIntNum to $intNum via BRIDGEPEER for call_id: $call_id\n";
+                
+                // Нашли transfer - прекращаем поиск
+                return;
+            }
+        }
+    },
+    function (EventMessage $event) {
+        // Фильтр: только VarSetEvent для BRIDGEPEER
+        return $event instanceof VarSetEvent && $event->getVariableName() === 'BRIDGEPEER';
+    }
+);
+
 //обрабатываем HoldEvent события
 $pamiClient->registerEventListener(
             function (EventMessage $event) use ($helper,$globalsObj, $callami) {
@@ -412,8 +522,9 @@ $pamiClient->registerEventListener(
                                                     'callUniqueid'=>$callLinkedid,
                                                     'CALL_ID'=>$globalsObj->calls[$callLinkedid]),
                                                 'incoming call ANSWER');
+                        
+                        
                         //для всех, кроме отвечающего, скрываем карточку
-
                         $helper->hideInputCallExcept($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
                         break;
                     case 'BUSY': //занято
@@ -519,7 +630,7 @@ $pamiClient->registerEventListener(
             ], 'TRANSFER: Initial connection tracked');
             
         } else {
-            // Transfer на нового абонента
+            // Transfer на нового абонента (новый Bridge с внешним каналом)
             $oldIntNum = $globalsObj->transferHistory[$externalUniqueid]['currentIntNum'];
             
             // Проверяем что действительно transfer (новый абонент отличается)
