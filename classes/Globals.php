@@ -40,9 +40,6 @@ class Globals {
     
     // Для отслеживания Transfer звонков (переключение между внутренними абонентами)
     public $transferHistory = array();     // [externalUniqueid => ['call_id'=>..., 'externalChannel'=>..., 'currentIntNum'=>..., 'history'=>[]]]
-    
-    // Для отслеживания завершенных звонков (чтобы не завершать повторно)
-    public $finishedCalls = array();       // [uniqueid => true] - звонки которые уже завершены через finishCall
 
     static public function getInstance(){
 		if (null === self::$instance) {

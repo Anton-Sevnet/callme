@@ -307,19 +307,16 @@ $pamiClient->registerEventListener(
         if ($event->getVariableName() === 'DIALSTATUS' && !empty($globalsObj->calls[$callLinkedid]) && !empty($globalsObj->intNums[$callLinkedid])) {
             $dialStatus = strtoupper($event->getValue());
             if ($dialStatus === 'BUSY' || $dialStatus === 'CANCEL') {
-                // Проверяем что звонок еще не завершен (нет записи о завершении)
-                if (!isset($globalsObj->finishedCalls[$callLinkedid])) {
-                    $statusCode = ($dialStatus === 'BUSY') ? 486 : 603;
-                    $duration = $globalsObj->Durations[$callLinkedid] ?? 0;
-                    $finishResult = $helper->finishCall($globalsObj->calls[$callLinkedid], $globalsObj->intNums[$callLinkedid], $duration, $statusCode);
-                    $globalsObj->finishedCalls[$callLinkedid] = true; // Помечаем как завершенный
-                    $helper->writeToLog([
-                        'callLinkedid' => $callLinkedid,
-                        'dialStatus' => $dialStatus,
-                        'statusCode' => $statusCode,
-                        'finishResult' => $finishResult
-                    ], "VarSetEvent DIALSTATUS $dialStatus: Call finished in B24 (fallback)");
-                }
+                $statusCode = ($dialStatus === 'BUSY') ? 486 : 603;
+                $duration = $globalsObj->Durations[$callLinkedid] ?? 0;
+                $finishResult = $helper->finishCall($globalsObj->calls[$callLinkedid], $globalsObj->intNums[$callLinkedid], $duration, $statusCode);
+                $helper->hideInputCall($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
+                $helper->writeToLog([
+                    'callLinkedid' => $callLinkedid,
+                    'dialStatus' => $dialStatus,
+                    'statusCode' => $statusCode,
+                    'finishResult' => $finishResult
+                ], "VarSetEvent DIALSTATUS $dialStatus: Call finished in B24 (fallback)");
             }
         }
 
@@ -506,20 +503,13 @@ $pamiClient->registerEventListener(
                 'intNum' => $globalsObj->intNums[$callLinkedid] ?? null
             ], "Dial SubEvent: End with $dialStatus");
             
-            // Завершаем звонок если он еще не завершен
-            if (!empty($globalsObj->calls[$callLinkedid]) && !empty($globalsObj->intNums[$callLinkedid]) && !isset($globalsObj->finishedCalls[$callLinkedid])) {
+            // Завершаем звонок
+            if (!empty($globalsObj->calls[$callLinkedid]) && !empty($globalsObj->intNums[$callLinkedid])) {
                 $statusCode = ($dialStatus === "BUSY") ? 486 : 603;
                 $duration = $globalsObj->Durations[$callLinkedid] ?? 0;
                 $finishResult = $helper->finishCall($globalsObj->calls[$callLinkedid], $globalsObj->intNums[$callLinkedid], $duration, $statusCode);
-                $globalsObj->finishedCalls[$callLinkedid] = true;
+                $helper->hideInputCall($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
                 $helper->writeToLog($finishResult, "Dial SubEvent: End $dialStatus - Call finished in B24");
-            } else {
-                $helper->writeToLog([
-                    'callLinkedid' => $callLinkedid,
-                    'hasCallId' => !empty($globalsObj->calls[$callLinkedid]),
-                    'hasIntNum' => !empty($globalsObj->intNums[$callLinkedid]),
-                    'alreadyFinished' => isset($globalsObj->finishedCalls[$callLinkedid])
-                ], "Dial SubEvent: End $dialStatus - Cannot finish call (missing data or already finished)");
             }
             return; // Не обрабатываем дальше для SubEvent: End
         }
@@ -640,12 +630,12 @@ $pamiClient->registerEventListener(
                                                     'callUniqueid'=>$callLinkedid,
                                                     'CALL_ID'=>$globalsObj->calls[$callLinkedid]),
                                                 'incoming call BUSY');
-                        //завершаем звонок в Б24 (автоматически закроет карточку)
-                        if (!empty($globalsObj->calls[$callLinkedid]) && !empty($globalsObj->intNums[$callLinkedid]) && !isset($globalsObj->finishedCalls[$callLinkedid])) {
+                        //завершаем звонок в Б24 и закрываем карточку
+                        if (!empty($globalsObj->calls[$callLinkedid]) && !empty($globalsObj->intNums[$callLinkedid])) {
                             $statusCode = 486; // BUSY
                             $duration = $globalsObj->Durations[$callLinkedid] ?? 0;
                             $finishResult = $helper->finishCall($globalsObj->calls[$callLinkedid], $globalsObj->intNums[$callLinkedid], $duration, $statusCode);
-                            $globalsObj->finishedCalls[$callLinkedid] = true; // Помечаем как завершенный
+                            $helper->hideInputCall($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
                             $helper->writeToLog($finishResult, 'DialEndEvent BUSY: Call finished in B24');
                         }
                         break;
@@ -654,12 +644,12 @@ $pamiClient->registerEventListener(
                                                     'callUniqueid'=>$callLinkedid,
                                                     'CALL_ID'=>$globalsObj->calls[$callLinkedid]),
                                                 'incoming call CANCEL');
-                        //завершаем звонок в Б24 (автоматически закроет карточку)
-                        if (!empty($globalsObj->calls[$callLinkedid]) && !empty($globalsObj->intNums[$callLinkedid]) && !isset($globalsObj->finishedCalls[$callLinkedid])) {
+                        //завершаем звонок в Б24 и закрываем карточку
+                        if (!empty($globalsObj->calls[$callLinkedid]) && !empty($globalsObj->intNums[$callLinkedid])) {
                             $statusCode = 603; // CANCEL/Declined
                             $duration = $globalsObj->Durations[$callLinkedid] ?? 0;
                             $finishResult = $helper->finishCall($globalsObj->calls[$callLinkedid], $globalsObj->intNums[$callLinkedid], $duration, $statusCode);
-                            $globalsObj->finishedCalls[$callLinkedid] = true; // Помечаем как завершенный
+                            $helper->hideInputCall($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
                             $helper->writeToLog($finishResult, 'DialEndEvent CANCEL: Call finished in B24');
                         }
                         break;            
@@ -882,16 +872,11 @@ $pamiClient->registerEventListener(
                     'Disposition'=>$CallDisposition), true);
                 
                 // НЕМЕДЛЕННО завершаем звонок в Битрикс (БЕЗ записи)
-                // finishCall автоматически закроет карточку согласно API Битрикс24
-                if (!isset($globalsObj->finishedCalls[$callLinkedid])) {
-                    $statusCode = $helper->getStatusCodeFromDisposition($CallDisposition);
-                    $finishResult = $helper->finishCall($call_id, $CallIntNum, $CallDuration, $statusCode);
-                    $globalsObj->finishedCalls[$callLinkedid] = true; // Помечаем как завершенный
-                    $helper->writeToLog($finishResult, 'HangupEvent: Call finished in B24 (card auto-closed)');
-                    echo "call finished immediately in B24, status: $statusCode (card auto-closed)\n";
-                } else {
-                    $helper->writeToLog("Call $callLinkedid already finished, skipping", 'HangupEvent: Call already finished');
-                }
+                $statusCode = $helper->getStatusCodeFromDisposition($CallDisposition);
+                $finishResult = $helper->finishCall($call_id, $CallIntNum, $CallDuration, $statusCode);
+                $helper->hideInputCall($CallIntNum, $call_id);
+                $helper->writeToLog($finishResult, 'HangupEvent: Call finished in B24 (card closed)');
+                echo "call finished immediately in B24, status: $statusCode (card closed)\n";
                 
                 // Upload with async background process to avoid blocking main CallMeIn process
                 $uploadCmd = sprintf(
@@ -927,10 +912,6 @@ $pamiClient->registerEventListener(
                 $helper->removeItemFromArray($globalsObj->Dispositions,$callLinkedid,'key');
                 $helper->removeItemFromArray($globalsObj->calls,$callLinkedid,'key');
                 $helper->removeItemFromArray($globalsObj->Onhold,$event->getChannel(),'key');
-                // Очищаем метку завершенного звонка
-                if (isset($globalsObj->finishedCalls[$callLinkedid])) {
-                    unset($globalsObj->finishedCalls[$callLinkedid]);
-                }
                 
                 // Очищаем маппинг linkedid если он был создан для обычного звонка
                 if (isset($globalsObj->uniqueidToLinkedid[$callLinkedid])) {
