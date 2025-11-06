@@ -44,6 +44,8 @@ $globalsObj->user_show_cards = $helper->getConfig('user_show_cards');
 //создаем экземпляр класса PAMI
 $pamiClient = $callami->NewPAMIClient();
 $pamiClient->open();
+// Задержка после open() для полной инициализации соединения
+usleep(500000); // 0.5 секунды
 // Параметры healthcheck из конфига с дефолтами
 $ami_ping_interval = (int)($helper->getConfig('ami_ping_interval') ?: 5); // сек
 $ami_ping_missed_max = (int)($helper->getConfig('ami_ping_missed_max') ?: 3);
@@ -1315,6 +1317,73 @@ function checkOriginateHealthy($globalsObj, $helper) {
 $lastOriginateHealthCheck = 0;
 
 while(true) {
+    // Периодический пинг AMI (ПЕРЕД process() чтобы ответ не был обработан раньше времени)
+    if (time() - $lastPingAt >= $ami_ping_interval) {
+        $lastPingAt = time();
+        try {
+            $pong = $pamiClient->send(new PingAction());
+            // Используем getKey() вместо getKeys()['Response'] и проверяем isSuccess()
+            $resp = is_object($pong) ? $pong->getKey('Response') : null;
+            $isSuccess = is_object($pong) ? $pong->isSuccess() : false;
+            
+            if ($isSuccess && $resp !== null) {
+                $successfulPingsCount++;
+                $previousMissedPings = $missedPings;
+                $missedPings = 0;
+                $reconnectBackoff = 5;
+                
+                // DEBUG: Логируем успешный пинг
+                if ($helper->shouldLogHealthcheck('ping', 'DEBUG')) {
+                    $helper->writeHealthcheckLog([
+                        'pingTime' => $lastPingAt,
+                        'response' => $resp,
+                        'isSuccess' => $isSuccess,
+                        'successfulPingsCount' => $successfulPingsCount,
+                        'previousMissedPings' => $previousMissedPings
+                    ], 'PING DEBUG: Successful ping');
+                }
+                
+                // NOTICE: Логируем сброс счётчика пропущенных пингов (если был сброс)
+                if ($previousMissedPings > 0 && $helper->shouldLogHealthcheck('ping', 'NOTICE')) {
+                    $helper->writeHealthcheckLog([
+                        'pingTime' => $lastPingAt,
+                        'previousMissedPings' => $previousMissedPings,
+                        'action' => 'missed pings counter reset'
+                    ], 'PING NOTICE: Missed pings counter reset after successful ping');
+                }
+            } else {
+                $missedPings++;
+                $pingError = 'Invalid response: ' . ($resp ?? 'null') . ', isSuccess: ' . ($isSuccess ? 'true' : 'false');
+                
+                // NOTICE: Логируем пропущенный пинг
+                if ($helper->shouldLogHealthcheck('ping', 'NOTICE')) {
+                    $helper->writeHealthcheckLog([
+                        'pingTime' => $lastPingAt,
+                        'response' => $resp,
+                        'isSuccess' => $isSuccess,
+                        'missedPings' => $missedPings,
+                        'error' => $pingError,
+                        'reason' => 'invalid_response'
+                    ], 'PING NOTICE: Missed ping - invalid response');
+                }
+            }
+        } catch (\Throwable $e) {
+            $missedPings++;
+            $pingException = $e->getMessage();
+            
+            // NOTICE: Логируем исключение при пинге
+            if ($helper->shouldLogHealthcheck('ping', 'NOTICE')) {
+                $helper->writeHealthcheckLog([
+                    'pingTime' => $lastPingAt,
+                    'missedPings' => $missedPings,
+                    'exception' => $pingException,
+                    'exceptionClass' => get_class($e),
+                    'reason' => 'exception'
+                ], 'PING NOTICE: Missed ping - exception');
+            }
+        }
+    }
+    
     // Безопасная обработка событий
     try {
         $pamiClient->process();
@@ -1384,6 +1453,8 @@ while(true) {
         
         try {
             $pamiClient->open();
+            // Задержка после open() для полной инициализации соединения
+            usleep(500000); // 0.5 секунды
             $reconnectBackoff = min($reconnectBackoff * 2, 60);
             $missedPings = 0;
             $lastEventAt = time();
@@ -1446,68 +1517,6 @@ while(true) {
             // если не удалось открыть — подождём и попробуем в следующей итерации
         }
         continue;
-    }
-
-    // Периодический пинг AMI
-    if (time() - $lastPingAt >= $ami_ping_interval) {
-        $lastPingAt = time();
-        try {
-            $pong = $pamiClient->send(new PingAction());
-            $resp = is_object($pong) ? ($pong->getKeys()['Response'] ?? null) : null;
-            if ($resp === 'Success') {
-                $successfulPingsCount++;
-                $previousMissedPings = $missedPings;
-                $missedPings = 0;
-                $reconnectBackoff = 5;
-                
-                // DEBUG: Логируем успешный пинг
-                if ($helper->shouldLogHealthcheck('ping', 'DEBUG')) {
-                    $helper->writeHealthcheckLog([
-                        'pingTime' => $lastPingAt,
-                        'response' => $resp,
-                        'successfulPingsCount' => $successfulPingsCount,
-                        'previousMissedPings' => $previousMissedPings
-                    ], 'PING DEBUG: Successful ping');
-                }
-                
-                // NOTICE: Логируем сброс счётчика пропущенных пингов (если был сброс)
-                if ($previousMissedPings > 0 && $helper->shouldLogHealthcheck('ping', 'NOTICE')) {
-                    $helper->writeHealthcheckLog([
-                        'pingTime' => $lastPingAt,
-                        'previousMissedPings' => $previousMissedPings,
-                        'action' => 'missed pings counter reset'
-                    ], 'PING NOTICE: Missed pings counter reset after successful ping');
-                }
-            } else {
-                $missedPings++;
-                $pingError = 'Invalid response: ' . ($resp ?? 'null');
-                
-                // NOTICE: Логируем пропущенный пинг
-                if ($helper->shouldLogHealthcheck('ping', 'NOTICE')) {
-                    $helper->writeHealthcheckLog([
-                        'pingTime' => $lastPingAt,
-                        'response' => $resp,
-                        'missedPings' => $missedPings,
-                        'error' => $pingError,
-                        'reason' => 'invalid_response'
-                    ], 'PING NOTICE: Missed ping - invalid response');
-                }
-            }
-        } catch (\Throwable $e) {
-            $missedPings++;
-            $pingException = $e->getMessage();
-            
-            // NOTICE: Логируем исключение при пинге
-            if ($helper->shouldLogHealthcheck('ping', 'NOTICE')) {
-                $helper->writeHealthcheckLog([
-                    'pingTime' => $lastPingAt,
-                    'missedPings' => $missedPings,
-                    'exception' => $pingException,
-                    'exceptionClass' => get_class($e),
-                    'reason' => 'exception'
-                ], 'PING NOTICE: Missed ping - exception');
-            }
-        }
     }
 
     // Условия реконнекта: пропущенные ping + простой по событиям
@@ -1599,6 +1608,8 @@ while(true) {
         
         try {
             $pamiClient->open();
+            // Задержка после open() для полной инициализации соединения
+            usleep(500000); // 0.5 секунды
             $reconnectBackoff = min($reconnectBackoff * 2, 60);
             $lastEventAt = time();
             $connectionStartTime = time(); // Обновляем время начала соединения
