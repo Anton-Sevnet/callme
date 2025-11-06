@@ -54,6 +54,10 @@ $lastPingAt = 0;
 $missedPings = 0;
 $lastEventAt = time();
 $reconnectBackoff = 5; // сек, с увеличением до 60
+$connectionStartTime = time(); // Время начала соединения
+$reconnectCount = 0; // Счётчик реконнектов
+$successfulPingsCount = 0; // Счётчик успешных пингов
+$lastStatsLogTime = 0; // Время последней записи статистики
 echo 'Start';
 echo "\n\r";
 
@@ -68,8 +72,22 @@ $helper->writeToLog(NULL,
 //NewchannelEvent incoming
 // Обновление времени последнего события для watchdog
 $pamiClient->registerEventListener(
-    function (EventMessage $event) use (&$lastEventAt) {
+    function (EventMessage $event) use (&$lastEventAt, $helper) {
         $lastEventAt = time();
+        
+        // DEBUG: Логируем обновление времени последнего события (периодически)
+        if ($helper->shouldLogHealthcheck('watchdog', 'DEBUG')) {
+            static $debugCheckCount = 0;
+            $debugCheckCount++;
+            // Логируем каждые 100 событий, чтобы не засорять лог
+            if ($debugCheckCount % 100 == 0) {
+                $helper->writeHealthcheckLog([
+                    'lastEventAt' => $lastEventAt,
+                    'idleSeconds' => 0,
+                    'eventsProcessed' => $debugCheckCount
+                ], 'WATCHDOG DEBUG: Last event time updated');
+            }
+        }
     },
     function (EventMessage $event) {
         return true; // все события
@@ -1301,17 +1319,130 @@ while(true) {
     try {
         $pamiClient->process();
     } catch (\Throwable $e) {
-        $helper->writeToLog($e->getMessage(), 'AMI process exception');
+        $reconnectCount++;
+        $reconnectStartTime = time();
+        $reconnectAttemptBackoff = $reconnectBackoff;
+        $exceptionMessage = $e->getMessage();
+        $exceptionClass = get_class($e);
+        
+        // NOTICE: Логируем исключение при process()
+        if ($helper->shouldLogHealthcheck('reconnect', 'NOTICE')) {
+            $helper->writeHealthcheckLog([
+                'reason' => 'exception',
+                'exception' => $exceptionMessage,
+                'exceptionClass' => $exceptionClass,
+                'reconnectCount' => $reconnectCount,
+                'backoff' => $reconnectBackoff
+            ], 'RECONNECT NOTICE: Exception in process() - starting reconnection');
+        }
+        
+        // DEBUG: Детальное логирование исключения
+        if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+            $helper->writeHealthcheckLog([
+                'reason' => 'exception',
+                'exception' => $exceptionMessage,
+                'exceptionClass' => $exceptionClass,
+                'reconnectCount' => $reconnectCount,
+                'backoff' => $reconnectBackoff,
+                'connectionUptime' => time() - $connectionStartTime,
+                'trace' => $e->getTraceAsString()
+            ], 'RECONNECT DEBUG: Exception in process() - details');
+        }
+        
+        $helper->writeToLog($exceptionMessage, 'AMI process exception');
+        
         // попытка мягкого переподключения: close+open на том же клиенте (listeners сохраняются)
-        try { $pamiClient->close(); } catch (\Throwable $x) {}
-        sleep(min($reconnectBackoff, 60));
+        try { 
+            $pamiClient->close(); 
+            
+            // DEBUG: Логируем закрытие соединения
+            if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+                $helper->writeHealthcheckLog([
+                    'action' => 'connection_closed_after_exception'
+                ], 'RECONNECT DEBUG: Connection closed after exception');
+            }
+        } catch (\Throwable $x) {
+            // DEBUG: Логируем ошибку при закрытии
+            if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+                $helper->writeHealthcheckLog([
+                    'action' => 'close_error_after_exception',
+                    'error' => $x->getMessage()
+                ], 'RECONNECT DEBUG: Error closing connection after exception');
+            }
+        }
+        
+        $sleepTime = min($reconnectBackoff, 60);
+        sleep($sleepTime);
+        
+        // DEBUG: Логируем ожидание перед реконнектом
+        if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+            $helper->writeHealthcheckLog([
+                'sleepTime' => $sleepTime,
+                'backoff' => $reconnectBackoff
+            ], 'RECONNECT DEBUG: Waiting before reconnect after exception');
+        }
+        
         try {
             $pamiClient->open();
             $reconnectBackoff = min($reconnectBackoff * 2, 60);
             $missedPings = 0;
             $lastEventAt = time();
+            $connectionStartTime = time(); // Обновляем время начала соединения
+            $reconnectDuration = time() - $reconnectStartTime;
+            
+            // NOTICE: Логируем успешный реконнект после исключения
+            if ($helper->shouldLogHealthcheck('reconnect', 'NOTICE')) {
+                $helper->writeHealthcheckLog([
+                    'reason' => 'exception',
+                    'reconnectCount' => $reconnectCount,
+                    'duration' => $reconnectDuration,
+                    'newBackoff' => $reconnectBackoff,
+                    'result' => 'success'
+                ], 'RECONNECT NOTICE: Reconnection successful after exception');
+            }
+            
+            // DEBUG: Детальное логирование успешного реконнекта
+            if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+                $helper->writeHealthcheckLog([
+                    'reason' => 'exception',
+                    'reconnectCount' => $reconnectCount,
+                    'duration' => $reconnectDuration,
+                    'oldBackoff' => $reconnectAttemptBackoff,
+                    'newBackoff' => $reconnectBackoff,
+                    'result' => 'success',
+                    'connectionStartTime' => $connectionStartTime
+                ], 'RECONNECT DEBUG: Reconnection successful after exception - details');
+            }
+            
             $helper->writeToLog(['backoff' => $reconnectBackoff], 'AMI reconnected after exception');
         } catch (\Throwable $y) {
+            $reconnectDuration = time() - $reconnectStartTime;
+            
+            // NOTICE: Логируем неудачный реконнект после исключения
+            if ($helper->shouldLogHealthcheck('reconnect', 'NOTICE')) {
+                $helper->writeHealthcheckLog([
+                    'reason' => 'exception',
+                    'reconnectCount' => $reconnectCount,
+                    'duration' => $reconnectDuration,
+                    'error' => $y->getMessage(),
+                    'errorClass' => get_class($y),
+                    'result' => 'failed'
+                ], 'RECONNECT NOTICE: Reconnection failed after exception');
+            }
+            
+            // DEBUG: Детальное логирование неудачного реконнекта
+            if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+                $helper->writeHealthcheckLog([
+                    'reason' => 'exception',
+                    'reconnectCount' => $reconnectCount,
+                    'duration' => $reconnectDuration,
+                    'backoff' => $reconnectBackoff,
+                    'error' => $y->getMessage(),
+                    'errorClass' => get_class($y),
+                    'result' => 'failed',
+                    'action' => 'will_retry'
+                ], 'RECONNECT DEBUG: Reconnection failed after exception - will retry');
+            }
             // если не удалось открыть — подождём и попробуем в следующей итерации
         }
         continue;
@@ -1324,36 +1455,240 @@ while(true) {
             $pong = $pamiClient->send(new PingAction());
             $resp = is_object($pong) ? ($pong->getKeys()['Response'] ?? null) : null;
             if ($resp === 'Success') {
+                $successfulPingsCount++;
+                $previousMissedPings = $missedPings;
                 $missedPings = 0;
                 $reconnectBackoff = 5;
+                
+                // DEBUG: Логируем успешный пинг
+                if ($helper->shouldLogHealthcheck('ping', 'DEBUG')) {
+                    $helper->writeHealthcheckLog([
+                        'pingTime' => $lastPingAt,
+                        'response' => $resp,
+                        'successfulPingsCount' => $successfulPingsCount,
+                        'previousMissedPings' => $previousMissedPings
+                    ], 'PING DEBUG: Successful ping');
+                }
+                
+                // NOTICE: Логируем сброс счётчика пропущенных пингов (если был сброс)
+                if ($previousMissedPings > 0 && $helper->shouldLogHealthcheck('ping', 'NOTICE')) {
+                    $helper->writeHealthcheckLog([
+                        'pingTime' => $lastPingAt,
+                        'previousMissedPings' => $previousMissedPings,
+                        'action' => 'missed pings counter reset'
+                    ], 'PING NOTICE: Missed pings counter reset after successful ping');
+                }
             } else {
                 $missedPings++;
+                $pingError = 'Invalid response: ' . ($resp ?? 'null');
+                
+                // NOTICE: Логируем пропущенный пинг
+                if ($helper->shouldLogHealthcheck('ping', 'NOTICE')) {
+                    $helper->writeHealthcheckLog([
+                        'pingTime' => $lastPingAt,
+                        'response' => $resp,
+                        'missedPings' => $missedPings,
+                        'error' => $pingError,
+                        'reason' => 'invalid_response'
+                    ], 'PING NOTICE: Missed ping - invalid response');
+                }
             }
         } catch (\Throwable $e) {
             $missedPings++;
+            $pingException = $e->getMessage();
+            
+            // NOTICE: Логируем исключение при пинге
+            if ($helper->shouldLogHealthcheck('ping', 'NOTICE')) {
+                $helper->writeHealthcheckLog([
+                    'pingTime' => $lastPingAt,
+                    'missedPings' => $missedPings,
+                    'exception' => $pingException,
+                    'exceptionClass' => get_class($e),
+                    'reason' => 'exception'
+                ], 'PING NOTICE: Missed ping - exception');
+            }
         }
     }
 
     // Условия реконнекта: пропущенные ping + простой по событиям
-    if ($missedPings >= $ami_ping_missed_max || (time() - $lastEventAt) > $idle_watchdog_timeout) {
+    $idleSeconds = time() - $lastEventAt;
+    $reconnectReason = null;
+    
+    if ($missedPings >= $ami_ping_missed_max) {
+        $reconnectReason = 'ping_failed';
+    } elseif ($idleSeconds > $idle_watchdog_timeout) {
+        $reconnectReason = 'watchdog_timeout';
+        
+        // NOTICE: Логируем срабатывание watchdog таймаута
+        if ($helper->shouldLogHealthcheck('watchdog', 'NOTICE')) {
+            $helper->writeHealthcheckLog([
+                'idleSeconds' => $idleSeconds,
+                'timeout' => $idle_watchdog_timeout,
+                'lastEventAt' => $lastEventAt,
+                'currentTime' => time(),
+                'action' => 'watchdog timeout triggered'
+            ], 'WATCHDOG NOTICE: Timeout triggered - no events received');
+        }
+    }
+    
+    if ($reconnectReason) {
+        $reconnectCount++;
+        $reconnectStartTime = time();
+        $reconnectAttemptBackoff = $reconnectBackoff;
+        
+        // NOTICE: Логируем начало реконнекта
+        if ($helper->shouldLogHealthcheck('reconnect', 'NOTICE')) {
+            $helper->writeHealthcheckLog([
+                'reason' => $reconnectReason,
+                'missedPings' => $missedPings,
+                'idleSeconds' => $idleSeconds,
+                'reconnectCount' => $reconnectCount,
+                'backoff' => $reconnectBackoff
+            ], 'RECONNECT NOTICE: Starting reconnection');
+        }
+        
+        // DEBUG: Детальное логирование реконнекта
+        if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+            $helper->writeHealthcheckLog([
+                'reason' => $reconnectReason,
+                'missedPings' => $missedPings,
+                'idleSeconds' => $idleSeconds,
+                'reconnectCount' => $reconnectCount,
+                'backoff' => $reconnectBackoff,
+                'connectionUptime' => time() - $connectionStartTime,
+                'action' => 'reconnect_start'
+            ], 'RECONNECT DEBUG: Reconnection details');
+        }
+        
         $helper->writeToLog([
             'missedPings' => $missedPings,
-            'idleSec' => time() - $lastEventAt
+            'idleSec' => $idleSeconds,
+            'reason' => $reconnectReason
         ], 'AMI healthcheck failed, reconnecting');
+        
         $missedPings = 0;
-        try { $pamiClient->close(); } catch (\Throwable $e) {}
-        sleep(min($reconnectBackoff, 60));
+        try { 
+            $pamiClient->close(); 
+            
+            // DEBUG: Логируем закрытие соединения
+            if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+                $helper->writeHealthcheckLog([
+                    'action' => 'connection_closed'
+                ], 'RECONNECT DEBUG: Connection closed');
+            }
+        } catch (\Throwable $e) {
+            // DEBUG: Логируем ошибку при закрытии
+            if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+                $helper->writeHealthcheckLog([
+                    'action' => 'close_error',
+                    'error' => $e->getMessage()
+                ], 'RECONNECT DEBUG: Error closing connection');
+            }
+        }
+        
+        $sleepTime = min($reconnectBackoff, 60);
+        sleep($sleepTime);
+        
+        // DEBUG: Логируем ожидание перед реконнектом
+        if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+            $helper->writeHealthcheckLog([
+                'sleepTime' => $sleepTime,
+                'backoff' => $reconnectBackoff
+            ], 'RECONNECT DEBUG: Waiting before reconnect');
+        }
+        
         try {
             $pamiClient->open();
             $reconnectBackoff = min($reconnectBackoff * 2, 60);
             $lastEventAt = time();
+            $connectionStartTime = time(); // Обновляем время начала соединения
+            $reconnectDuration = time() - $reconnectStartTime;
+            
+            // NOTICE: Логируем успешный реконнект
+            if ($helper->shouldLogHealthcheck('reconnect', 'NOTICE')) {
+                $helper->writeHealthcheckLog([
+                    'reason' => $reconnectReason,
+                    'reconnectCount' => $reconnectCount,
+                    'duration' => $reconnectDuration,
+                    'newBackoff' => $reconnectBackoff,
+                    'result' => 'success'
+                ], 'RECONNECT NOTICE: Reconnection successful');
+            }
+            
+            // DEBUG: Детальное логирование успешного реконнекта
+            if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+                $helper->writeHealthcheckLog([
+                    'reason' => $reconnectReason,
+                    'reconnectCount' => $reconnectCount,
+                    'duration' => $reconnectDuration,
+                    'oldBackoff' => $reconnectAttemptBackoff,
+                    'newBackoff' => $reconnectBackoff,
+                    'result' => 'success',
+                    'connectionStartTime' => $connectionStartTime
+                ], 'RECONNECT DEBUG: Reconnection successful - details');
+            }
+            
             $helper->writeToLog(['backoff' => $reconnectBackoff], 'AMI reconnected by healthcheck');
         } catch (\Throwable $e) {
+            $reconnectDuration = time() - $reconnectStartTime;
+            
+            // NOTICE: Логируем неудачный реконнект
+            if ($helper->shouldLogHealthcheck('reconnect', 'NOTICE')) {
+                $helper->writeHealthcheckLog([
+                    'reason' => $reconnectReason,
+                    'reconnectCount' => $reconnectCount,
+                    'duration' => $reconnectDuration,
+                    'error' => $e->getMessage(),
+                    'errorClass' => get_class($e),
+                    'result' => 'failed'
+                ], 'RECONNECT NOTICE: Reconnection failed');
+            }
+            
+            // DEBUG: Детальное логирование неудачного реконнекта
+            if ($helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+                $helper->writeHealthcheckLog([
+                    'reason' => $reconnectReason,
+                    'reconnectCount' => $reconnectCount,
+                    'duration' => $reconnectDuration,
+                    'backoff' => $reconnectBackoff,
+                    'error' => $e->getMessage(),
+                    'errorClass' => get_class($e),
+                    'result' => 'failed',
+                    'action' => 'will_retry'
+                ], 'RECONNECT DEBUG: Reconnection failed - will retry');
+            }
             // не удалось — продолжим цикл, будет новая попытка
         }
         continue;
     }
     check_to_remove_bu_holdtimeout($globalsObj);
+    
+    // Периодическая статистика соединения (раз в минуту, DEBUG уровень)
+    if (time() - $lastStatsLogTime >= 60) {
+        if ($helper->shouldLogHealthcheck('ping', 'DEBUG') || 
+            $helper->shouldLogHealthcheck('watchdog', 'DEBUG') || 
+            $helper->shouldLogHealthcheck('reconnect', 'DEBUG')) {
+            
+            $connectionUptime = time() - $connectionStartTime;
+            $idleSeconds = time() - $lastEventAt;
+            
+            $helper->writeHealthcheckLog([
+                'connectionUptime' => $connectionUptime,
+                'connectionUptimeFormatted' => gmdate('H:i:s', $connectionUptime),
+                'reconnectCount' => $reconnectCount,
+                'successfulPingsCount' => $successfulPingsCount,
+                'missedPings' => $missedPings,
+                'lastEventAt' => $lastEventAt,
+                'idleSeconds' => $idleSeconds,
+                'lastPingAt' => $lastPingAt,
+                'reconnectBackoff' => $reconnectBackoff,
+                'ami_ping_interval' => $ami_ping_interval,
+                'ami_ping_missed_max' => $ami_ping_missed_max,
+                'idle_watchdog_timeout' => $idle_watchdog_timeout
+            ], 'STATS DEBUG: Connection statistics');
+        }
+        $lastStatsLogTime = time();
+    }
     
     // Проверка "зависших" Originate-вызовов каждые 15 секунд
     if (time() - $lastOriginateHealthCheck > 15) {

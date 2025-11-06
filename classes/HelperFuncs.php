@@ -911,6 +911,62 @@ class HelperFuncs {
 	}
 
 	/**
+	 * Check if healthcheck logging is enabled for specific section and level
+	 *
+	 * @param string $section Section name: 'ping', 'watchdog', 'reconnect'
+	 * @param string $level Log level: 'NOTICE' or 'DEBUG'
+	 *
+	 * @return bool
+	 */
+	public function shouldLogHealthcheck($section, $level) {
+		$config = $this->getConfig('ami_healthcheck_log');
+		
+		// Если конфиг не задан или не массив - логирование отключено
+		if (!is_array($config)) {
+			return false;
+		}
+		
+		// Проверяем наличие секции
+		if (!isset($config[$section]) || !is_array($config[$section])) {
+			return false;
+		}
+		
+		// Проверяем уровень логирования
+		if (!isset($config[$section][$level])) {
+			return false;
+		}
+		
+		return (bool)$config[$section][$level];
+	}
+
+	/**
+	 * Write healthcheck log to separate file logs/ami_healthcheck.log
+	 *
+	 * @param mixed $data Data to log
+	 * @param string $title Log title/tag
+	 *
+	 * @return bool
+	 */
+	public function writeHealthcheckLog($data, $title = '') {
+		$logDir = getcwd() . '/logs';
+		$logFile = $logDir . '/ami_healthcheck.log';
+		
+		// Создаём папку logs, если её нет
+		if (!is_dir($logDir)) {
+			@mkdir($logDir, 0755, true);
+		}
+		
+		$log = "\n------------------------\n";
+		$log .= date("Y.m.d G:i:s") . "\n";
+		$log .= (strlen($title) > 0 ? $title : 'HEALTHCHECK') . "\n";
+		$log .= print_r($data, 1);
+		$log .= "\n------------------------\n";
+		
+		file_put_contents($logFile, $log, FILE_APPEND);
+		return true;
+	}
+
+	/**
 	 * Translit string.
 	 *
 	 * @param string $string

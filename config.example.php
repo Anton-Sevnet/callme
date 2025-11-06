@@ -79,5 +79,24 @@ return array(
     
     // Event listener timeout (microseconds)
     'listener_timeout' => 100000,  // 0.1 second
+    
+    // AMI Healthcheck logging configuration
+    // Logs are written to logs/ami_healthcheck.log (independent of CallMeDEBUG)
+    // NOTICE level: important events (errors, timeouts, reconnects)
+    // DEBUG level: all events including successful operations and periodic checks
+    'ami_healthcheck_log' => array(
+        'ping' => array(
+            'NOTICE' => true,   // Log missed pings, errors, counter resets
+            'DEBUG' => false    // Log all pings including successful ones
+        ),
+        'watchdog' => array(
+            'NOTICE' => true,   // Log watchdog timeout triggers
+            'DEBUG' => false    // Log all watchdog checks with last event time
+        ),
+        'reconnect' => array(
+            'NOTICE' => true,   // Log reconnection events with reason
+            'DEBUG' => false    // Detailed reconnection logging (backoff, attempts, results)
+        )
+    ),
 );
 
