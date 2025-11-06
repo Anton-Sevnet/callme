@@ -581,16 +581,26 @@ $pamiClient->registerEventListener(
                                                     'callUniqueid'=>$callLinkedid,
                                                     'CALL_ID'=>$globalsObj->calls[$callLinkedid]),
                                                 'incoming call BUSY');
-                        //скрываем карточку для юзера
-                        $helper->hideInputCall($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
+                        //завершаем звонок в Б24 (автоматически закроет карточку)
+                        if (!empty($globalsObj->calls[$callLinkedid]) && !empty($globalsObj->intNums[$callLinkedid])) {
+                            $statusCode = 486; // BUSY
+                            $duration = $globalsObj->Durations[$callLinkedid] ?? 0;
+                            $finishResult = $helper->finishCall($globalsObj->calls[$callLinkedid], $globalsObj->intNums[$callLinkedid], $duration, $statusCode);
+                            $helper->writeToLog($finishResult, 'DialEndEvent BUSY: Call finished in B24');
+                        }
                         break;
                     case 'CANCEL': //звонивший бросил трубку
                         $helper->writeToLog(array('intNum'=>$globalsObj->intNums[$callLinkedid],
                                                     'callUniqueid'=>$callLinkedid,
                                                     'CALL_ID'=>$globalsObj->calls[$callLinkedid]),
                                                 'incoming call CANCEL');
-                        //скрываем карточку для юзера
-                        $helper->hideInputCall($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
+                        //завершаем звонок в Б24 (автоматически закроет карточку)
+                        if (!empty($globalsObj->calls[$callLinkedid]) && !empty($globalsObj->intNums[$callLinkedid])) {
+                            $statusCode = 603; // CANCEL/Declined
+                            $duration = $globalsObj->Durations[$callLinkedid] ?? 0;
+                            $finishResult = $helper->finishCall($globalsObj->calls[$callLinkedid], $globalsObj->intNums[$callLinkedid], $duration, $statusCode);
+                            $helper->writeToLog($finishResult, 'DialEndEvent CANCEL: Call finished in B24');
+                        }
                         break;            
                     default:
                         break;
@@ -811,19 +821,11 @@ $pamiClient->registerEventListener(
                     'Disposition'=>$CallDisposition), true);
                 
                 // НЕМЕДЛЕННО завершаем звонок в Битрикс (БЕЗ записи)
+                // finishCall автоматически закроет карточку согласно API Битрикс24
                 $statusCode = $helper->getStatusCodeFromDisposition($CallDisposition);
                 $finishResult = $helper->finishCall($call_id, $CallIntNum, $CallDuration, $statusCode);
-                $helper->writeToLog($finishResult, 'Call finished immediately (without record)');
-                echo "call finished immediately in B24, status: $statusCode\n";
-                
-                // СКРЫВАЕМ карточку звонка для пользователя
-                $hideResult = $helper->hideInputCall($CallIntNum, $call_id);
-                $helper->writeToLog(array(
-                    'intNum' => $CallIntNum,
-                    'call_id' => $call_id,
-                    'hideResult' => $hideResult
-                ), 'HangupEvent: Card hidden for user');
-                echo "card hidden for intNum: $CallIntNum\n";
+                $helper->writeToLog($finishResult, 'HangupEvent: Call finished in B24 (card auto-closed)');
+                echo "call finished immediately in B24, status: $statusCode (card auto-closed)\n";
                 
                 // Upload with async background process to avoid blocking main CallMeIn process
                 $uploadCmd = sprintf(
@@ -1053,18 +1055,7 @@ $pamiClient->registerEventListener(
                     'dialStatus' => $dialStatus,
                     'statusCode' => $statusCode,
                     'finishResult' => $finishResult
-                ], 'ORIGINATE: External dial FAILED - finishing call immediately');
-                
-                // СКРЫВАЕМ карточку звонка для пользователя
-                if (!empty($data['intNum']) && !empty($data['call_id'])) {
-                    $hideResult = $helper->hideInputCall($data['intNum'], $data['call_id']);
-                    $helper->writeToLog([
-                        'intNum' => $data['intNum'],
-                        'call_id' => $data['call_id'],
-                        'hideResult' => $hideResult
-                    ], 'ORIGINATE: Card hidden (dial failed)');
-                    echo "ORIGINATE: card hidden for intNum: {$data['intNum']} (dial failed)\n";
-                }
+                ], 'ORIGINATE: External dial FAILED - finishing call immediately (card auto-closed)');
                 
                 // Очистка всех маппингов
                 foreach ($data['channels'] as $uid => $channelData) {
@@ -1174,18 +1165,7 @@ $pamiClient->registerEventListener(
                     'answered' => $data['answered'],
                     'finishResult' => $finishResult,
                     'used_fallback' => (empty($data['call_id']) || empty($data['intNum']))
-                ], 'ORIGINATE: All channels closed - finishing call in Bitrix24');
-                
-                // СКРЫВАЕМ карточку звонка для пользователя (используем fallback значения)
-                if (!empty($intNum) && !empty($call_id)) {
-                    $hideResult = $helper->hideInputCall($intNum, $call_id);
-                    $helper->writeToLog([
-                        'intNum' => $intNum,
-                        'call_id' => $call_id,
-                        'hideResult' => $hideResult
-                    ], 'ORIGINATE: Card hidden for user');
-                    echo "ORIGINATE: card hidden for intNum: $intNum\n";
-                }
+                ], 'ORIGINATE: All channels closed - finishing call in Bitrix24 (card auto-closed)');
                 
                 // Асинхронная загрузка записи если есть
                 if (!empty($data['record_url'])) {
@@ -1268,13 +1248,8 @@ function checkOriginateHealthy($globalsObj, $helper) {
             ], 'FALLBACK: Force finishing timeout call');
             
             $helper->finishCall($data['call_id'], $data['intNum'], 0, 304);
-            
-            // СКРЫВАЕМ карточку
-            if (!empty($data['intNum']) && !empty($data['call_id'])) {
-                $helper->hideInputCall($data['intNum'], $data['call_id']);
-                $helper->writeToLog(['intNum' => $data['intNum'], 'call_id' => $data['call_id']], 
-                    'FALLBACK: Card hidden (timeout)');
-            }
+            $helper->writeToLog(['intNum' => $data['intNum'], 'call_id' => $data['call_id']], 
+                'FALLBACK: Call finished (timeout, card auto-closed)');
             
             // Очистка маппингов
             foreach ($data['channels'] as $uid => $channelData) {
@@ -1297,13 +1272,8 @@ function checkOriginateHealthy($globalsObj, $helper) {
         $duration = $helper->calculateOriginateDuration($data);
         
         $helper->finishCall($data['call_id'], $data['intNum'], $duration, $statusCode);
-        
-        // СКРЫВАЕМ карточку
-        if (!empty($data['intNum']) && !empty($data['call_id'])) {
-            $helper->hideInputCall($data['intNum'], $data['call_id']);
-            $helper->writeToLog(['intNum' => $data['intNum'], 'call_id' => $data['call_id']], 
-                'FALLBACK: Card hidden (inactive)');
-        }
+        $helper->writeToLog(['intNum' => $data['intNum'], 'call_id' => $data['call_id']], 
+            'FALLBACK: Call finished (inactive, card auto-closed)');
         
         // Очистка маппингов
         foreach ($data['channels'] as $uid => $channelData) {
