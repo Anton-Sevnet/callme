@@ -25,6 +25,7 @@ use PAMI\Message\Event\HangupEvent;
 use PAMI\Message\Event\BridgeEvent;
 use PAMI\Message\Action\ActionMessage;
 use PAMI\Message\Action\SetVarAction;
+use PAMI\Message\Action\PingAction;
 /*
 * end: for events listener
 */
@@ -43,6 +44,16 @@ $globalsObj->user_show_cards = $helper->getConfig('user_show_cards');
 //создаем экземпляр класса PAMI
 $pamiClient = $callami->NewPAMIClient();
 $pamiClient->open();
+// Параметры healthcheck из конфига с дефолтами
+$ami_ping_interval = (int)($helper->getConfig('ami_ping_interval') ?: 5); // сек
+$ami_ping_missed_max = (int)($helper->getConfig('ami_ping_missed_max') ?: 3);
+$idle_watchdog_timeout = (int)($helper->getConfig('idle_watchdog_timeout') ?: 5); // сек
+
+// Служебные переменные healthcheck
+$lastPingAt = 0;
+$missedPings = 0;
+$lastEventAt = time();
+$reconnectBackoff = 5; // сек, с увеличением до 60
 echo 'Start';
 echo "\n\r";
 
@@ -55,6 +66,16 @@ $helper->writeToLog(NULL,
 //2. Запись звонков
 //3. Всплытие карточки
 //NewchannelEvent incoming
+// Обновление времени последнего события для watchdog
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use (&$lastEventAt) {
+        $lastEventAt = time();
+    },
+    function (EventMessage $event) {
+        return true; // все события
+    }
+);
+
 $pamiClient->registerEventListener(
             function (EventMessage $event) use ($helper,$callami,$globalsObj){
                 //выгребаем параметры звонка
@@ -1276,7 +1297,62 @@ function checkOriginateHealthy($globalsObj, $helper) {
 $lastOriginateHealthCheck = 0;
 
 while(true) {
-    $pamiClient->process();
+    // Безопасная обработка событий
+    try {
+        $pamiClient->process();
+    } catch (\Throwable $e) {
+        $helper->writeToLog($e->getMessage(), 'AMI process exception');
+        // попытка мягкого переподключения: close+open на том же клиенте (listeners сохраняются)
+        try { $pamiClient->close(); } catch (\Throwable $x) {}
+        sleep(min($reconnectBackoff, 60));
+        try {
+            $pamiClient->open();
+            $reconnectBackoff = min($reconnectBackoff * 2, 60);
+            $missedPings = 0;
+            $lastEventAt = time();
+            $helper->writeToLog(['backoff' => $reconnectBackoff], 'AMI reconnected after exception');
+        } catch (\Throwable $y) {
+            // если не удалось открыть — подождём и попробуем в следующей итерации
+        }
+        continue;
+    }
+
+    // Периодический пинг AMI
+    if (time() - $lastPingAt >= $ami_ping_interval) {
+        $lastPingAt = time();
+        try {
+            $pong = $pamiClient->send(new PingAction());
+            $resp = is_object($pong) ? ($pong->getKeys()['Response'] ?? null) : null;
+            if ($resp === 'Success') {
+                $missedPings = 0;
+                $reconnectBackoff = 5;
+            } else {
+                $missedPings++;
+            }
+        } catch (\Throwable $e) {
+            $missedPings++;
+        }
+    }
+
+    // Условия реконнекта: пропущенные ping + простой по событиям
+    if ($missedPings >= $ami_ping_missed_max || (time() - $lastEventAt) > $idle_watchdog_timeout) {
+        $helper->writeToLog([
+            'missedPings' => $missedPings,
+            'idleSec' => time() - $lastEventAt
+        ], 'AMI healthcheck failed, reconnecting');
+        $missedPings = 0;
+        try { $pamiClient->close(); } catch (\Throwable $e) {}
+        sleep(min($reconnectBackoff, 60));
+        try {
+            $pamiClient->open();
+            $reconnectBackoff = min($reconnectBackoff * 2, 60);
+            $lastEventAt = time();
+            $helper->writeToLog(['backoff' => $reconnectBackoff], 'AMI reconnected by healthcheck');
+        } catch (\Throwable $e) {
+            // не удалось — продолжим цикл, будет новая попытка
+        }
+        continue;
+    }
     check_to_remove_bu_holdtimeout($globalsObj);
     
     // Проверка "зависших" Originate-вызовов каждые 15 секунд
