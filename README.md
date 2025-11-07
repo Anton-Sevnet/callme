@@ -444,6 +444,11 @@ sudo asterisk -rx "dialplan reload"
 
 # 6. Проверка
 sudo asterisk -rx "dialplan show sub-record-check-custom"
+
+# 7. Автоочистка непрерывных записей (опционально)
+sudo cp contrib/cleanup_continuous.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/cleanup_continuous.sh
+echo "30 2 * * * /usr/local/bin/cleanup_continuous.sh" | sudo tee /etc/cron.d/cleanup_continuous
 ```
 
 **Что делает модуль:**
