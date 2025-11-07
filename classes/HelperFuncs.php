@@ -868,6 +868,29 @@ class HelperFuncs {
 	    else return;
 	}
 
+	public function logAmiHealth($channel, $level, $message, array $context = array()) {
+		$config = $this->getConfig('ami_healthcheck_log');
+		if (!is_array($config)) {
+			$config = array();
+		}
+		$channelKey = strtolower($channel);
+		$channelConfig = $config[$channelKey] ?? $config[$channel] ?? array('NOTICE' => true);
+		$level = strtoupper($level);
+		$allowed = $channelConfig[$level] ?? ($level === 'NOTICE');
+		if (!$allowed) {
+			return;
+		}
+		$log = "\n------------------------\n";
+		$log .= date("Y.m.d G:i:s") . "\n";
+		$log .= sprintf('%s [%s]', strtoupper($channel), $level) . "\n";
+		$log .= $message . "\n";
+		if (!empty($context)) {
+			$log .= print_r($context, true);
+		}
+		$log .= "\n------------------------\n";
+		file_put_contents(getcwd() . '/logs/ami_healthcheck.log', $log, FILE_APPEND);
+	}
+
 	/**
 	 * Remove item from array.
 	 *

@@ -25,10 +25,13 @@ use PAMI\Message\Event\HangupEvent;
 use PAMI\Message\Event\BridgeEvent;
 use PAMI\Message\Action\ActionMessage;
 use PAMI\Message\Action\SetVarAction;
+use PAMI\Message\Action\PingAction;
+use PAMI\Client\Exception\ClientException;
 /*
 * end: for events listener
 */
 
+ 
 $helper = new HelperFuncs();
 $callami = new CallAMI();
 
@@ -50,11 +53,194 @@ echo "\n\r";
 $helper->writeToLog(NULL,
     'Start CallMeIn');
 
+if (!is_array($globalsObj->amiState) || empty($globalsObj->amiState)) {
+    $globalsObj->amiState = array(
+        'lastEventTs' => microtime(true),
+        'lastHash' => null,
+        'hashStableSince' => null,
+        'lastPingTs' => 0,
+        'lastPingStatus' => null,
+    );
+}
+
+$healthCheckTimeoutSec = (int) $helper->getConfig('healthCheckTimeout');
+if ($healthCheckTimeoutSec <= 0) {
+    $healthCheckTimeoutSec = 5;
+}
+$pingIdleTimeoutSec = (int) $helper->getConfig('pingIdleTimeout');
+if ($pingIdleTimeoutSec <= 0) {
+    $pingIdleTimeoutSec = 30;
+}
+$listenerTimeoutMicro = (int) $helper->getConfig('listener_timeout');
+if ($listenerTimeoutMicro <= 0) {
+    $listenerTimeoutMicro = 50000;
+}
+$healthCheckCycleThreshold = max(1, (int) ceil($healthCheckTimeoutSec / ($listenerTimeoutMicro / 1000000)));
+$healthCheckCycleCounter = 0;
+
+function ami_touch_activity($globalsObj)
+{
+    $globalsObj->amiState['lastEventTs'] = microtime(true);
+}
+
+function ami_update_originate_activity(EventMessage $event, $globalsObj)
+{
+    $candidates = array(
+        $event->getKey('Uniqueid'),
+        $event->getKey('UniqueID'),
+        $event->getKey('Uniqueid1'),
+        $event->getKey('Uniqueid2'),
+    );
+    foreach ($candidates as $uniqueId) {
+        if (!$uniqueId) {
+            continue;
+        }
+        $linkedId = $globalsObj->uniqueidToLinkedid[$uniqueId] ?? null;
+        if ($linkedId && isset($globalsObj->originateCalls[$linkedId])) {
+            $globalsObj->originateCalls[$linkedId]['last_activity'] = time();
+        }
+    }
+}
+
+function compute_active_calls_hash($globalsObj)
+{
+    if (empty($globalsObj->calls) && empty($globalsObj->originateCalls) && empty($globalsObj->transferHistory) && empty($globalsObj->Onhold)) {
+        return null;
+    }
+
+    $snapshot = array(
+        'calls' => array_keys($globalsObj->calls),
+        'originate' => array(),
+        'transfer' => array_keys($globalsObj->transferHistory),
+        'onhold' => array_keys($globalsObj->Onhold)
+    );
+
+    foreach ($globalsObj->originateCalls as $linkedId => $data) {
+        $snapshot['originate'][$linkedId] = array(
+            'call_id' => $data['call_id'] ?? null,
+            'answered' => $data['answered'] ?? false,
+            'channels' => isset($data['channels']) ? array_keys($data['channels']) : array(),
+            'last_activity' => $data['last_activity'] ?? null,
+        );
+    }
+
+    $encoded = json_encode($snapshot);
+    if ($encoded === false) {
+        $encoded = serialize($snapshot);
+    }
+
+    return md5($encoded);
+}
+
+function ami_attempt_reconnect($pamiClient, $helper, $globalsObj)
+{
+    $helper->logAmiHealth('reconnect', 'NOTICE', 'Попытка переподключения к AMI после сбоя.');
+    try {
+        $pamiClient->close();
+    } catch (\Throwable $closeError) {
+        $helper->logAmiHealth('reconnect', 'DEBUG', 'Ошибка при закрытии соединения AMI', array('error' => $closeError->getMessage()));
+    }
+
+    usleep(250000); // 250 мс перед повторным подключением
+
+    try {
+        $pamiClient->open();
+        ami_touch_activity($globalsObj);
+        $globalsObj->amiState['lastHash'] = null;
+        $globalsObj->amiState['hashStableSince'] = null;
+        $globalsObj->amiState['lastPingStatus'] = 'reconnected';
+        $globalsObj->amiState['lastPingTs'] = microtime(true);
+        $helper->logAmiHealth('reconnect', 'NOTICE', 'Соединение с AMI восстановлено.');
+        return true;
+    } catch (ClientException $reconnectError) {
+        $helper->logAmiHealth('reconnect', 'NOTICE', 'Не удалось переподключиться к AMI', array('error' => $reconnectError->getMessage()));
+        return false;
+    }
+}
+
+function ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pingIdleTimeoutSec)
+{
+    $now = microtime(true);
+    $stats = $pamiClient->getLastReadStats();
+    $lastReadTs = isset($stats['timestamp']) ? (float) $stats['timestamp'] : 0.0;
+    $timeSinceData = $lastReadTs > 0 ? $now - $lastReadTs : $pingIdleTimeoutSec + 1;
+    $timeSinceEvent = $now - ($globalsObj->amiState['lastEventTs'] ?? 0);
+
+    $currentHash = compute_active_calls_hash($globalsObj);
+    if ($currentHash === null) {
+        $globalsObj->amiState['lastHash'] = null;
+        $globalsObj->amiState['hashStableSince'] = null;
+        return;
+    }
+
+    if ($globalsObj->amiState['lastHash'] !== $currentHash) {
+        $globalsObj->amiState['lastHash'] = $currentHash;
+        $globalsObj->amiState['hashStableSince'] = $now;
+        return;
+    }
+
+    if (empty($globalsObj->amiState['hashStableSince'])) {
+        $globalsObj->amiState['hashStableSince'] = $now;
+        return;
+    }
+
+    $hashStableDuration = $now - $globalsObj->amiState['hashStableSince'];
+
+    if ($hashStableDuration < $pingIdleTimeoutSec) {
+        return;
+    }
+
+    if ($timeSinceData < $pingIdleTimeoutSec || $timeSinceEvent < $pingIdleTimeoutSec) {
+        return;
+    }
+
+    if (!empty($globalsObj->amiState['lastPingTs']) && ($now - $globalsObj->amiState['lastPingTs']) < 5) {
+        return;
+    }
+
+    $helper->logAmiHealth('ping', 'NOTICE', 'Инициирован пинг AMI: нет активности и изменения массивов.', array(
+        'time_since_data' => $timeSinceData,
+        'time_since_event' => $timeSinceEvent,
+        'hash_stable_duration' => $hashStableDuration,
+    ));
+
+    try {
+        $response = $pamiClient->send(new PingAction());
+        $globalsObj->amiState['lastPingTs'] = microtime(true);
+        $globalsObj->amiState['hashStableSince'] = microtime(true);
+        $globalsObj->amiState['lastPingStatus'] = $response->isSuccess() ? 'success' : 'failure';
+        $helper->logAmiHealth(
+            'ping',
+            $response->isSuccess() ? 'DEBUG' : 'NOTICE',
+            $response->isSuccess() ? 'AMI ping успешен.' : 'AMI ping вернул ошибку.',
+            array('response' => $response->getMessage())
+        );
+        if (!$response->isSuccess()) {
+            ami_attempt_reconnect($pamiClient, $helper, $globalsObj);
+        }
+    } catch (ClientException $pingError) {
+        $globalsObj->amiState['lastPingTs'] = microtime(true);
+        $globalsObj->amiState['lastPingStatus'] = 'error';
+        $helper->logAmiHealth('ping', 'NOTICE', 'Исключение при выполнении AMI ping.', array('error' => $pingError->getMessage()));
+        ami_attempt_reconnect($pamiClient, $helper, $globalsObj);
+    }
+}
+
 //обрабатываем NewchannelEventIncoming события 
 //1. Создание лидов
 //2. Запись звонков
 //3. Всплытие карточки
 //NewchannelEvent incoming
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($globalsObj) {
+        ami_touch_activity($globalsObj);
+        ami_update_originate_activity($event, $globalsObj);
+    },
+    function () {
+        return true;
+    }
+);
+
 $pamiClient->registerEventListener(
             function (EventMessage $event) use ($helper,$callami,$globalsObj){
                 //выгребаем параметры звонка
@@ -1196,8 +1382,12 @@ if ($enableFullLog) {
 
 function check_to_remove_bu_holdtimeout($globalsObj) {
     global $callami, $helper;
+    $holdTimeout = (int) $helper->getConfig('hold_timeout');
+    if ($holdTimeout <= 0) {
+        $holdTimeout = 60;
+    }
     foreach ($globalsObj->Onhold as $a) {
-        if (time() - $a["time"] > 1) {
+        if (time() - $a["time"] > $holdTimeout) {
             $callami->Hangup($a["channel"]);
             $helper->removeItemFromArray($globalsObj->Onhold, $a["channel"],'key');
         }
@@ -1219,6 +1409,11 @@ function checkOriginateHealthy($globalsObj, $helper) {
         
         // Неотвеченный вызов висит более 10 минут
         if (!$data['answered'] && ($now - $data['created_at']) > 600) {
+            $helper->logAmiHealth('watchdog', 'NOTICE', 'Originate-вызов завершён по таймауту 10 минут без ответа.', array(
+                'linkedid' => $linkedId,
+                'call_id' => $data['call_id'] ?? null,
+                'age_seconds' => $now - $data['created_at']
+            ));
             $helper->writeToLog([
                 'linkedid' => $linkedId,
                 'call_id' => $data['call_id'],
@@ -1244,6 +1439,12 @@ function checkOriginateHealthy($globalsObj, $helper) {
         }
         
         // Нет активности более 30 секунд (события должны приходить постоянно)
+        $helper->logAmiHealth('watchdog', 'NOTICE', 'Originate-вызов завершён из-за отсутствия активности >30 секунд.', array(
+            'linkedid' => $linkedId,
+            'call_id' => $data['call_id'] ?? null,
+            'inactive_seconds' => $now - $data['last_activity'],
+            'remaining_channels' => count($data['channels'])
+        ));
         $helper->writeToLog([
             'linkedid' => $linkedId,
             'call_id' => $data['call_id'],
@@ -1276,16 +1477,30 @@ function checkOriginateHealthy($globalsObj, $helper) {
 $lastOriginateHealthCheck = 0;
 
 while(true) {
-    $pamiClient->process();
+    try {
+        $pamiClient->process();
+    } catch (ClientException $processError) {
+        $helper->logAmiHealth('reconnect', 'NOTICE', 'Ошибка чтения AMI в основном цикле.', array('error' => $processError->getMessage()));
+        ami_attempt_reconnect($pamiClient, $helper, $globalsObj);
+        usleep($listenerTimeoutMicro);
+        continue;
+    }
+
+    $healthCheckCycleCounter++;
+    if ($healthCheckCycleCounter >= $healthCheckCycleThreshold) {
+        $healthCheckCycleCounter = 0;
+        ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pingIdleTimeoutSec);
+    }
+
     check_to_remove_bu_holdtimeout($globalsObj);
-    
+
     // Проверка "зависших" Originate-вызовов каждые 15 секунд
     if (time() - $lastOriginateHealthCheck > 15) {
         checkOriginateHealthy($globalsObj, $helper);
         $lastOriginateHealthCheck = time();
     }
-    
-    usleep($helper->getConfig('listener_timeout'));
+
+    usleep($listenerTimeoutMicro);
 }
 $pamiClient->ClosePAMIClient($pamiClient);
 

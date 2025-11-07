@@ -41,6 +41,9 @@ class Globals {
     // Для отслеживания Transfer звонков (переключение между внутренними абонентами)
     public $transferHistory = array();     // [externalUniqueid => ['call_id'=>..., 'externalChannel'=>..., 'currentIntNum'=>..., 'history'=>[]]]
 
+    // Состояние health-check AMI
+    public $amiState = array();
+
     static public function getInstance(){
 		if (null === self::$instance) {
 			self::$instance = new self();

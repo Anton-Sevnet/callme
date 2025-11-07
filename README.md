@@ -162,6 +162,14 @@
 ```
 Один файл содержит весь разговор, включая все transfer между абонентами.
 
+### 4. **Устойчивость AMI соединения и watchdog**
+
+- Отслеживание активности по событиям AMI и быстрому хэшу ключевых массивов (`calls`, `originateCalls`, `transferHistory`, `Onhold`).
+- Если 30 секунд нет данных и состояние звонков не меняется, выполняется `PingAction`; успешный ответ сбрасывает таймеры, а сбой автоматически инициирует безопасный reconnect.
+- При отсутствии активных звонков health-check не запускается, что исключает лишние пинги.
+- Логи стабильности выводятся в `logs/ami_healthcheck.log` с разделением по каналам `ping`, `watchdog`, `reconnect`.
+- Таймаут удержания увеличен до 60 секунд (конфиг `hold_timeout`), чтобы MusicOnHold не завершал реальный вызов.
+
 **Установка на АТС:**
 
 Модуль **ОБЯЗАТЕЛЬНО** должен быть установлен на сервере Asterisk:
@@ -479,9 +487,12 @@ return array(
     // Asterisk AMI
     'asterisk' => array(
         'host' => '192.168.1.100',  // IP АТС
+        'scheme' => 'tcp://',
         'port' => 5038,
         'username' => 'b24',
         'secret' => 'your_secret',
+        'connect_timeout' => 10,    // сек: ожидание установки TCP
+        'read_timeout' => 10000,    // мс: ожидание ответа (≈10 сек)
     ),
     
     // Bitrix24 API
@@ -507,6 +518,20 @@ return array(
     // Список пользователей для показа карточек
     'user_show_cards' => array('101', '102', '103'),
     
+    // Пауза основного цикла (микросекунды)
+    'listener_timeout' => 50000,
+
+    // Health-check AMI
+    'healthCheckTimeout' => 5,   // сек: частота проверки в циклах
+    'pingIdleTimeout' => 30,     // сек: пинг только при "заснувших" активных вызовах
+    'hold_timeout' => 60,        // сек: максимум удержания до принудительного Hangup
+
+    'ami_healthcheck_log' => array(
+        'ping' => array('NOTICE' => true, 'DEBUG' => false),
+        'watchdog' => array('NOTICE' => true, 'DEBUG' => false),
+        'reconnect' => array('NOTICE' => true, 'DEBUG' => false),
+    ),
+
     // Debug режим
     'CallMeDEBUG' => true,
     'enable_full_log' => false,
@@ -537,6 +562,14 @@ php /var/www/callme/CallMeIn.php &
 # Проверка логов
 tail -f /var/www/callme/logs/CallMe.log
 ```
+
+### Health-check AMI и watchdog
+
+- Каждому событию AMI соответствует отметка активности, а состояние активных массивов (`calls`, `originateCalls`, `transferHistory`, `Onhold`) фиксируется через компактный хеш.
+- Если 30 секунд не приходит данных по AMI и хеш не меняется, при наличии активных звонков выполняется `PingAction`; успешный ответ сбрасывает таймеры, провал приводит к безопасному переподключению.
+- При пустых массивах health-check не запускается, что исключает лишние пинги в моменты простоя.
+- Для диагностики используется отдельный лог `logs/ami_healthcheck.log` с каналами `ping`, `watchdog`, `reconnect` (управляются параметром `ami_healthcheck_log`).
+- Таймаут удержания увеличен до 60 секунд (настраивается параметром `hold_timeout`), чтобы реальные разговоры на MusicOnHold не завершались принудительно.
 
 ### Проверка работы:
 
@@ -611,5 +644,5 @@ tail -f /var/www/callme/logs/CallMe.log | grep "ORIGINATE\|TRANSFER"
 
 ---
 
-**Версия:** 2.0  
-**Последнее обновление:** 2025-11-01
+**Версия:** 2.1.0  
+**Последнее обновление:** 2025-11-07

@@ -13,8 +13,8 @@ return array(
         'port' => 5038,             // Asterisk AMI port
         'username' => 'admin',      // AMI username
         'secret' => 'your_secret',  // AMI password
-        'connect_timeout' => 10000,
-        'read_timeout' => 10000,
+        'connect_timeout' => 10,    // seconds
+        'read_timeout' => 10000,    // milliseconds (≈10 seconds)
         'scheme' => 'tcp://'
     ),
 
@@ -71,13 +71,24 @@ return array(
         '105',
     ),
     
+    // Event listener timeout (microseconds)
+    'listener_timeout' => 50000,  // 0.05 second
+
+    // Health-check configuration
+    'healthCheckTimeout' => 5,   // seconds: cycle watchdog interval
+    'pingIdleTimeout' => 30,     // seconds: idle period before PingAction
+    'hold_timeout' => 60,        // seconds: max MusicOnHold duration before force hangup
+
+    'ami_healthcheck_log' => array(
+        'ping' => array('NOTICE' => true, 'DEBUG' => false),
+        'watchdog' => array('NOTICE' => true, 'DEBUG' => false),
+        'reconnect' => array('NOTICE' => true, 'DEBUG' => false),
+    ),
+
     // Debug mode (enable logging)
     'CallMeDEBUG' => true,
     
     // Full event log (logs ALL events to full.log, very verbose)
     'enable_full_log' => false,
-    
-    // Event listener timeout (microseconds)
-    'listener_timeout' => 100000,  // 0.1 second
 );
 

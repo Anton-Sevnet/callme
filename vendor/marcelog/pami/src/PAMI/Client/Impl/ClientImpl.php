@@ -154,6 +154,18 @@ class ClientImpl implements IClient
     private $eventMask;
 
     /**
+     * Bytes прочитанные за последнее чтение сокета.
+     * @var int
+     */
+    private $lastReadBytes;
+
+    /**
+     * Время (microtime) последнего успешного чтения (>0 байт).
+     * @var float
+     */
+    private $lastReadTimestamp;
+
+    /**
      * Opens a tcp connection to ami.
      *
      * @throws \PAMI\Client\Exception\ClientException
@@ -192,6 +204,8 @@ class ClientImpl implements IClient
         @stream_set_blocking($this->socket, 0);
         $this->currentProcessingMessage = '';
         $this->logger->debug('Logged in successfully to ami.');
+        $this->lastReadBytes = 0;
+        $this->lastReadTimestamp = microtime(true);
     }
 
     /**
@@ -236,9 +250,16 @@ class ClientImpl implements IClient
     {
         $msgs = array();
         // Read something.
+        $this->lastReadBytes = 0;
+        $readStartedAt = microtime(true);
         $read = @fread($this->socket, 65535);
         if ($read === false || @feof($this->socket)) {
             throw new ClientException('Error reading');
+        }
+        $bytesRead = strlen($read);
+        if ($bytesRead > 0) {
+            $this->lastReadBytes = $bytesRead;
+            $this->lastReadTimestamp = $readStartedAt;
         }
         $this->currentProcessingMessage .= $read;
         // If we have a complete message, then return it. Save the rest for
@@ -424,6 +445,19 @@ class ClientImpl implements IClient
     }
 
     /**
+     * Returns socket read statistics.
+     *
+     * @return array{bytes:int,timestamp:float}
+     */
+    public function getLastReadStats()
+    {
+        return array(
+            'bytes' => $this->lastReadBytes,
+            'timestamp' => $this->lastReadTimestamp
+        );
+    }
+
+    /**
      * Closes the connection to ami.
      *
      * @return void
@@ -467,5 +501,7 @@ class ClientImpl implements IClient
         $this->eventFactory = new EventFactoryImpl();
         $this->incomingQueue = array();
         $this->lastActionId = false;
+        $this->lastReadBytes = 0;
+        $this->lastReadTimestamp = microtime(true);
     }
 }
