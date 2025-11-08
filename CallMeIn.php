@@ -356,6 +356,7 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
     ), 'show input call single');
 
     if ($result) {
+        $globalsObj->callIdByInt[$intNum] = $call_id;
         if (!isset($globalsObj->callShownCards[$linkedid])) {
             $globalsObj->callShownCards[$linkedid] = array();
         }
@@ -453,29 +454,6 @@ function callme_handle_dial_begin_common(
         $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
     }
 
-    $pendingLinkedid = null;
-    if (isset($globalsObj->pendingCalls[$linkedid])) {
-        $pendingLinkedid = $linkedid;
-    } else {
-        foreach ($globalsObj->pendingCalls as $candidateLinkedid => $pendingData) {
-            if (($pendingData['primary_linkedid'] ?? null) === $linkedid) {
-                $pendingLinkedid = $candidateLinkedid;
-                break;
-            }
-        }
-    }
-    if ($pendingLinkedid !== null) {
-        $pendingPrimary = $globalsObj->pendingCalls[$pendingLinkedid]['primary_linkedid'] ?? $pendingLinkedid;
-        if ($pendingPrimary !== $pendingLinkedid) {
-            if (!isset($globalsObj->pendingCalls[$pendingPrimary])) {
-                $globalsObj->pendingCalls[$pendingPrimary] = $globalsObj->pendingCalls[$pendingLinkedid];
-            }
-            unset($globalsObj->pendingCalls[$pendingLinkedid]);
-            $pendingLinkedid = $pendingPrimary;
-        }
-        $linkedid = $pendingLinkedid;
-    }
-
     $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
     if (!empty($destUniqueId)) {
         $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
@@ -512,128 +490,25 @@ function callme_handle_dial_begin_common(
     ), 'DialBegin: RING state updated');
 
     $call_id = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
-
-    if (!$call_id && isset($globalsObj->pendingCalls[$linkedid])) {
-        $pending = &$globalsObj->pendingCalls[$linkedid];
-        if (!isset($pending['ring_sequence'])) {
-            $pending['ring_sequence'] = array();
-        }
-        if (!in_array($exten, $pending['ring_sequence'], true)) {
-            $pending['ring_sequence'][] = $exten;
-        }
-
-        $candidateIntNum = null;
-        $candidateUserId = null;
-
-        if (!$pending['registered']) {
-            foreach ($pending['ring_sequence'] as $ringInt) {
-                $ringUserId = $globalsObj->ringingIntNums[$linkedid][$ringInt]['user_id'] ?? $helper->getUSER_IDByIntNum($ringInt);
-                if ($ringUserId) {
-                    $candidateIntNum = $ringInt;
-                    $candidateUserId = $ringUserId;
-                    break;
-                }
-            }
-
-            if ($candidateIntNum !== null && $candidateUserId !== null) {
-                $callResult = $helper->runInputCall(
-                    $candidateIntNum,
-                    $pending['extNum'],
-                    $pending['line'],
-                    $pending['crm_source'],
-                    $candidateUserId
-                );
-                if ($callResult) {
-                    $call_id = $callResult['CALL_ID'];
-                    $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
-
-                    $currentCrmData = $globalsObj->callCrmData[$linkedid] ?? array();
-                    $globalsObj->callCrmData[$linkedid] = array_merge($currentCrmData, array(
-                        'entity_type' => $callResult['CRM_ENTITY_TYPE'] ?? ($currentCrmData['entity_type'] ?? null),
-                        'entity_id' => $callResult['CRM_ENTITY_ID'] ?? ($currentCrmData['entity_id'] ?? null),
-                        'created' => !empty($callResult['CRM_CREATED_LEAD']) || !empty($callResult['CRM_CREATED_ENTITIES']) || ($currentCrmData['created'] ?? false),
-                        'initial_responsible_user_id' => $candidateUserId,
-                        'current_responsible_user_id' => $candidateUserId,
-                    ));
-
-                    $pending['registered'] = true;
-                    $pending['registered_int'] = $candidateIntNum;
-                    $pending['registered_user_id'] = $candidateUserId;
-                    unset($globalsObj->pendingCalls[$linkedid]);
-
-                    $globalsObj->intNums[$linkedid] = $candidateIntNum;
-                    $globalsObj->intNums[$callUniqueid] = $exten;
-
-                    $helper->writeToLog(array(
-                        'linkedid' => $linkedid,
-                        'intNum' => $candidateIntNum,
-                        'userId' => $candidateUserId,
-                        'CALL_ID' => $call_id,
-                    ), 'Deferred call registered on agent');
-                } else {
-                    $helper->writeToLog(array(
-                        'linkedid' => $linkedid,
-                        'intNum' => $candidateIntNum,
-                        'userId' => $candidateUserId,
-                    ), 'Deferred call registration failed on agent');
-                }
-            } elseif (!$pending['fallback_used'] && !empty($pending['fallbackUserId'])) {
-                $fallbackIntNum = $pending['ring_sequence'][0] ?? ($pending['fallbackIntNum'] ?: $exten);
-                $callResult = $helper->runInputCall($fallbackIntNum, $pending['extNum'], $pending['line'], $pending['crm_source'], $pending['fallbackUserId']);
-                $pending['fallback_used'] = true;
-                if ($callResult) {
-                    $call_id = $callResult['CALL_ID'];
-                    $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
-                    $currentCrmData = $globalsObj->callCrmData[$linkedid] ?? array();
-                    $globalsObj->callCrmData[$linkedid] = array_merge($currentCrmData, array(
-                        'entity_type' => $callResult['CRM_ENTITY_TYPE'] ?? ($currentCrmData['entity_type'] ?? null),
-                        'entity_id' => $callResult['CRM_ENTITY_ID'] ?? ($currentCrmData['entity_id'] ?? null),
-                        'created' => !empty($callResult['CRM_CREATED_LEAD']) || !empty($callResult['CRM_CREATED_ENTITIES']) || ($currentCrmData['created'] ?? false),
-                        'initial_responsible_user_id' => $pending['fallbackUserId'],
-                        'current_responsible_user_id' => $pending['fallbackUserId'],
-                    ));
-                    $helper->writeToLog(array(
-                        'linkedid' => $linkedid,
-                        'fallbackUserId' => $pending['fallbackUserId'],
-                        'fallbackIntNum' => $fallbackIntNum,
-                        'CALL_ID' => $call_id,
-                    ), 'Deferred call registered on fallback user');
-                    $pending['registered'] = true;
-                    $pending['registered_int'] = $fallbackIntNum;
-                    $pending['registered_user_id'] = $pending['fallbackUserId'];
-                    unset($globalsObj->pendingCalls[$linkedid]);
-                    $globalsObj->intNums[$linkedid] = $fallbackIntNum;
-                    $globalsObj->intNums[$callUniqueid] = $exten;
-                } else {
-                    $helper->writeToLog(array(
-                        'linkedid' => $linkedid,
-                        'fallbackUserId' => $pending['fallbackUserId'],
-                        'fallbackIntNum' => $fallbackIntNum,
-                    ), 'Deferred call registration on fallback failed');
-                }
-            }
-        }
-        unset($pending);
-    }
-
     if ($call_id) {
         $globalsObj->calls[$callUniqueid] = $call_id;
-        $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
         if ($linkedid !== $callUniqueid) {
             $globalsObj->calls[$linkedid] = $call_id;
         }
+        $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+        $globalsObj->callIdByInt[$exten] = $call_id;
+    } else {
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'intNum' => $exten,
+            'uniqueid' => $callUniqueid,
+        ), 'DialBegin without registered CALL_ID');
     }
+
     $globalsObj->intNums[$callUniqueid] = $exten;
-    if ($linkedid && !isset($globalsObj->intNums[$linkedid]) && isset($globalsObj->callIdByLinkedid[$linkedid])) {
+    if ($linkedid && !isset($globalsObj->intNums[$linkedid]) && $call_id) {
         $globalsObj->intNums[$linkedid] = $exten;
     }
-
-    if (!$call_id) {
-        return;
-    }
-
-    callme_show_card_for_int($linkedid, $exten, $helper, $globalsObj);
-    callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
 }
 
 /**
@@ -910,6 +785,9 @@ $pamiClient->registerEventListener(
                     $globalsObj->callIdByLinkedid[$callLinkedid] = $call_id;
                     $globalsObj->uniqueidToLinkedid[$callLinkedid] = $callLinkedid;
                     $globalsObj->intNums[$callLinkedid] = $registerIntNum;
+                    if ($registerIntNum) {
+                        $globalsObj->callIdByInt[$registerIntNum] = $call_id;
+                    }
 
                     $globalsObj->callCrmData[$callLinkedid] = array(
                         'entity_type' => $callResult['CRM_ENTITY_TYPE'] ?? ($crmData['entity_type'] ?? null),
@@ -1040,26 +918,140 @@ $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper,$globalsObj) {
         echo 'VarSetEvent'."\n";
         echo $event->getRawContent();
-        $callLinkedid = $event->getKey("Uniqueid");
 
-        if ($event->getVariableName() === 'CallMeFULLFNAME' and
-            !isset($globalsObj->FullFnameUrls[$callLinkedid])) {
-            // Получаем относительный путь (YYYY/MM/DD/call-XXXXX.mp3) и формируем полный URL
-            $relativePath = $event->getValue();
-            $globalsObj->FullFnameUrls[$callLinkedid] = "http://195.98.170.206/continuous/" . $relativePath;
+        $variableName = $event->getVariableName();
+        $rawValue = $event->getValue();
+        $callUniqueid = $event->getKey("Uniqueid");
+        $linkedidFromEvent = $event->getKey("Linkedid");
+        $linkedid = $linkedidFromEvent ?: ($globalsObj->uniqueidToLinkedid[$callUniqueid] ?? null);
+
+        if ($variableName === 'CALLME_CARD_STATE') {
+            $payload = trim((string)$rawValue);
+            if ($payload === '') {
+                $helper->writeToLog(array(
+                    'uniqueid' => $callUniqueid,
+                    'linkedid' => $linkedid,
+                ), 'CALLME_CARD_STATE empty payload');
+                echo "\n-------------------------------------------------------------------\n\r";
+                echo "\n\r";
+                return;
+            }
+
+            $statePart = $payload;
+            $targetPart = '';
+            if (strpos($payload, ':') !== false) {
+                list($statePart, $targetPart) = explode(':', $payload, 2);
+            } elseif (strpos($payload, '|') !== false) {
+                list($statePart, $targetPart) = explode('|', $payload, 2);
+            }
+
+            $state = strtoupper(trim($statePart));
+            if ($targetPart === '') {
+                $segments = preg_split('/\s+/', trim($payload));
+                if (count($segments) >= 2) {
+                    $state = strtoupper(trim($segments[0]));
+                    $targetPart = $segments[1];
+                }
+            }
+            $intNum = preg_replace('/\D+/', '', (string)$targetPart);
+
+            if ($intNum === '') {
+                $helper->writeToLog(array(
+                    'payload' => $payload,
+                    'uniqueid' => $callUniqueid,
+                    'linkedid' => $linkedid,
+                ), 'CALLME_CARD_STATE invalid intNum');
+                echo "\n-------------------------------------------------------------------\n\r";
+                echo "\n\r";
+                return;
+            }
+
+            $callId = $linkedid ? ($globalsObj->callIdByLinkedid[$linkedid] ?? null) : null;
+            if (!$callId && isset($globalsObj->callIdByInt[$intNum])) {
+                $callId = $globalsObj->callIdByInt[$intNum];
+                if (!$linkedid) {
+                    $foundLinkedid = array_search($callId, $globalsObj->callIdByLinkedid, true);
+                    if ($foundLinkedid !== false) {
+                        $linkedid = $foundLinkedid;
+                    }
+                }
+            }
+
+            if (!$callId) {
+                $helper->writeToLog(array(
+                    'state' => $state,
+                    'intNum' => $intNum,
+                    'uniqueid' => $callUniqueid,
+                    'linkedid' => $linkedid,
+                ), 'CALLME_CARD_STATE without call_id');
+                echo "\n-------------------------------------------------------------------\n\r";
+                echo "\n\r";
+                return;
+            }
+
+            if ($state === 'SHOW') {
+                if ($linkedid) {
+                    $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+                    $globalsObj->callIdByInt[$intNum] = $callId;
+                    callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj);
+                } else {
+                    $helper->showInputCall($intNum, $callId);
+                    $helper->writeToLog(array(
+                        'intNum' => $intNum,
+                        'call_id' => $callId,
+                        'state' => $state,
+                    ), 'CALLME_CARD_STATE show without linkedid');
+                }
+            } elseif ($state === 'HIDE') {
+                if ($linkedid && isset($globalsObj->callShownCards[$linkedid][$intNum])) {
+                    unset($globalsObj->callShownCards[$linkedid][$intNum]);
+                    if (empty($globalsObj->callShownCards[$linkedid])) {
+                        unset($globalsObj->callShownCards[$linkedid]);
+                    }
+                }
+                if ($linkedid && isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
+                    unset($globalsObj->ringingIntNums[$linkedid][$intNum]);
+                    if (empty($globalsObj->ringingIntNums[$linkedid])) {
+                        unset($globalsObj->ringingIntNums[$linkedid]);
+                    }
+                }
+                $helper->hideInputCall($intNum, $callId);
+                if (isset($globalsObj->callIdByInt[$intNum])) {
+                    unset($globalsObj->callIdByInt[$intNum]);
+                }
+            } else {
+                $helper->writeToLog(array(
+                    'state' => $state,
+                    'intNum' => $intNum,
+                    'payload' => $payload,
+                ), 'CALLME_CARD_STATE unknown state');
+            }
+
+            echo "\n-------------------------------------------------------------------\n\r";
+            echo "\n\r";
+            return;
         }
 
-        if (($event->getVariableName()  === 'ANSWER' or $event->getVariableName()  === "DIALSTATUS")
-            and strlen($event->getValue()) > 1) {
-            $globalsObj->Dispositions[$callLinkedid] = "ANSWERED";
-        } else if ($event->getVariableName()  === 'ANSWER' and strlen($event->getValue()) == 0) {
-            $globalsObj->Dispositions[$callLinkedid] = "NO ANSWER";
+        if ($variableName === 'CallMeFULLFNAME'
+            && !isset($globalsObj->FullFnameUrls[$callUniqueid])) {
+            $relativePath = $rawValue;
+            $globalsObj->FullFnameUrls[$callUniqueid] = "http://195.98.170.206/continuous/" . $relativePath;
         }
 
-        if(preg_match('/^\d+$/',$event->getValue())) $globalsObj->Durations[$callLinkedid] = $event->getValue();
-        if(preg_match('/^[A-Z\ ]+$/',$event->getValue())) $globalsObj->Dispositions[$callLinkedid] = $event->getValue();
+        if (($variableName === 'ANSWER' || $variableName === 'DIALSTATUS')
+            && strlen($rawValue) > 1) {
+            $globalsObj->Dispositions[$callUniqueid] = "ANSWERED";
+        } elseif ($variableName === 'ANSWER' && strlen($rawValue) == 0) {
+            $globalsObj->Dispositions[$callUniqueid] = "NO ANSWER";
+        }
 
-        //логируем параметры звонка
+        if (preg_match('/^\d+$/', $rawValue)) {
+            $globalsObj->Durations[$callUniqueid] = $rawValue;
+        }
+        if (preg_match('/^[A-Z\ ]+$/', $rawValue)) {
+            $globalsObj->Dispositions[$callUniqueid] = $rawValue;
+        }
+
         $helper->writeToLog(array('FullFnameUrls'=>$globalsObj->FullFnameUrls,
                                   'Durations'=>$globalsObj->Durations,
                                   'Dispositions'=>$globalsObj->Dispositions),
@@ -1069,14 +1061,16 @@ $pamiClient->registerEventListener(
         },function (EventMessage $event) use ($globalsObj) {
             return
                 $event instanceof VarSetEvent
-                //проверяем что это именно нужная нам переменная
-                && ($event->getVariableName() === 'CallMeFULLFNAME'
-                    || $event->getVariableName() === 'DIALSTATUS'
-                    || $event->getVariableName()  === 'CallMeDURATION'
-                    || $event->getVariableName()  === 'ANSWER')
-
-                //проверяем на вхождение в массив
-                && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids);
+                && (
+                    $event->getVariableName() === 'CALLME_CARD_STATE'
+                    || (
+                        ($event->getVariableName() === 'CallMeFULLFNAME'
+                            || $event->getVariableName() === 'DIALSTATUS'
+                            || $event->getVariableName()  === 'CallMeDURATION'
+                            || $event->getVariableName()  === 'ANSWER')
+                        && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids)
+                    )
+                );
         }
 );
 
@@ -1601,9 +1595,6 @@ $pamiClient->registerEventListener(
                 // FALLBACK: Если не нашли call_id - пропускаем обработку
                 if (empty($call_id)) {
                     $helper->writeToLog("No call_id for Uniqueid $callLinkedid, skipping HangupEvent", 'HangupEvent FALLBACK');
-                    if (isset($globalsObj->pendingCalls[$linkedid])) {
-                        unset($globalsObj->pendingCalls[$linkedid]);
-                    }
                     unset($globalsObj->ringingIntNums[$linkedid]);
                     unset($globalsObj->callShownCards[$linkedid]);
                     return;
@@ -1669,9 +1660,6 @@ $pamiClient->registerEventListener(
                     echo "card hidden for intNum: $CallIntNum\n";
                 }
                 if ($linkedid) {
-                    if (isset($globalsObj->pendingCalls[$linkedid])) {
-                        unset($globalsObj->pendingCalls[$linkedid]);
-                    }
                     unset($globalsObj->callShownCards[$linkedid]);
                     unset($globalsObj->ringingIntNums[$linkedid]);
                     if (isset($globalsObj->ringOrder[$linkedid])) {

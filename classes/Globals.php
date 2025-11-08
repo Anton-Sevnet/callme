@@ -22,8 +22,8 @@ class Globals {
     public $ringingIntNums = array(); // [linkedid => ['100' => ['user_id'=>123, 'shown'=>bool, 'state'=>'RING']]]
     //Порядок появления внутренних номеров в состоянии RING
     public $ringOrder = array(); // [linkedid => ['100','101']]
-    //Отложенные регистрации (когда нет ответственного)
-    public $pendingCalls = array(); // [linkedid => [...]]
+    //Текущий Call ID, закреплённый за внутренними номерами (для быстрого доступа при событиях AMI)
+    public $callIdByInt = array(); // ['100' => CALL_ID]
 	//массив с uniqueid внешних звонкнов
     public $uniqueids = array();
 	//массив FullFname (url'ы записей разговоров), ключ - Uniqueid из asterisk
