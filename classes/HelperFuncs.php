@@ -347,13 +347,13 @@ class HelperFuncs {
 	    if (strlen($callerid) == 7){
             $callerid = "8342".$callerid;
         }
-	    $data = array(
+        $data = array(
             'USER_PHONE_INNER' => $exten,
             //'USER_ID' => $argv[1],
             'PHONE_NUMBER' => "+7".substr($callerid, -10),
             'LINE_NUMBER' => $line,
             'TYPE' => 2,
-            'CRM_CREATE' => 0,
+            'CRM_CREATE' => 1,
             'SHOW' => 1,
         );
 	    if ($crm_source !== null) {
