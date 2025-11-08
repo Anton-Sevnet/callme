@@ -1746,7 +1746,7 @@ $pamiClient->registerEventListener(
 // ОБРАБОТЧИК: Originate-вызовы (с использованием Linkedid)
 // ==========================================
 
-// 1. VarSetEvent (CallMeLINKEDID) - ТОЛЬКО создаём маппинг, НЕ создаём структуру
+// 1. VarSetEvent (CallMeLINKEDID) - фиксируем маппинг UniqueID ↔ linkedid
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
         $uniqueid = $event->getKey("Uniqueid");
