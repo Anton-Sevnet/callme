@@ -51,7 +51,6 @@ return array(
         '8001' => '101',  // Extension 8001 -> Internal number 101
         '8002' => '102',
         '8003' => '103',
-        'default_user_number' => '100',  // Default if not found
     ),
     
     // CRM source for lead creation

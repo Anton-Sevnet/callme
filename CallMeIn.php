@@ -279,13 +279,8 @@ $pamiClient->registerEventListener(
                 // выставим CallerID 
                 $callami->SetVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel);
                 
-                // Получаем внутренние номера для fallback и ответственного
-                $bx24 = $helper->getConfig('bx24');
-                if (!is_array($bx24)) {
-                    $bx24 = array('default_user_number' => '100');
-                }
-                $fallbackIntNum = array_key_exists($exten, $bx24) ? $bx24[$exten] : $bx24["default_user_number"];
                 $fallbackUserId = $helper->getFallbackResponsibleUserId();
+                $fallbackUserInt = $fallbackUserId ? $helper->getIntNumByUSER_ID($fallbackUserId) : null;
 
                 $selectedIntNum = null;
                 $selectedUserId = null;
@@ -341,7 +336,6 @@ $pamiClient->registerEventListener(
                     );
 
                     $helper->writeToLog(array(
-                        'fallbackIntNum' => $fallbackIntNum,
                         'selectedIntNum' => $selectedIntNum,
                         'responsibleUserId' => $selectedUserId,
                         'CRM_ENTITY_TYPE' => $callResult['CRM_ENTITY_TYPE'] ?? 'none',
@@ -359,15 +353,16 @@ $pamiClient->registerEventListener(
                     $globalsObj->intNums[$callLinkedid] = $selectedIntNum;
                 } else {
                     // Отложим регистрацию до появления первого агента
-                    $globalsObj->pendingCalls[$callLinkedid] = array(
+                    $pendingData = array(
                         'extNum' => $extNum,
                         'line' => $exten,
                         'crm_source' => $srmSource,
-                        'fallbackIntNum' => $fallbackIntNum,
                         'fallbackUserId' => $fallbackUserId,
+                        'fallbackIntNum' => $fallbackUserInt,
                         'registered' => false,
                         'fallback_used' => false,
                     );
+                    $globalsObj->pendingCalls[$callLinkedid] = $pendingData;
                     $globalsObj->callCrmData[$callLinkedid] = array(
                         'entity_type' => $crmData['entity_type'] ?? null,
                         'entity_id' => $crmData['entity_id'] ?? null,
@@ -376,10 +371,9 @@ $pamiClient->registerEventListener(
                         'current_responsible_user_id' => null,
                     );
                     $helper->writeToLog(array(
-                        'fallbackIntNum' => $fallbackIntNum,
                         'fallbackUserId' => $fallbackUserId,
+                        'fallbackIntNum' => $fallbackUserInt,
                     ), 'Call registration deferred until agent detected');
-                    $globalsObj->intNums[$callLinkedid] = $fallbackIntNum;
                 }
 
                 $globalsObj->Durations[$callLinkedid] = 0;
@@ -720,8 +714,9 @@ $pamiClient->registerEventListener(
                         'userId' => $userId,
                     ), 'Deferred call registration failed on agent');
                 }
-            } elseif (!$pending['fallback_used'] && !empty($pending['fallbackIntNum']) && !empty($pending['fallbackUserId'])) {
-                $callResult = $helper->runInputCall($pending['fallbackIntNum'], $pending['extNum'], $pending['line'], $pending['crm_source'], $pending['fallbackUserId']);
+            } elseif (!$pending['fallback_used'] && !empty($pending['fallbackUserId']) && !empty($pending['fallbackIntNum'])) {
+                $fallbackIntNum = $pending['fallbackIntNum'];
+                $callResult = $helper->runInputCall($fallbackIntNum, $pending['extNum'], $pending['line'], $pending['crm_source'], $pending['fallbackUserId']);
                 $pending['fallback_used'] = true;
                 if ($callResult) {
                     $call_id = $callResult['CALL_ID'];
@@ -735,17 +730,17 @@ $pamiClient->registerEventListener(
                     );
                     $helper->writeToLog(array(
                         'linkedid' => $linkedid,
-                        'fallbackIntNum' => $pending['fallbackIntNum'],
                         'fallbackUserId' => $pending['fallbackUserId'],
+                        'fallbackIntNum' => $pending['fallbackIntNum'],
                         'CALL_ID' => $call_id,
                     ), 'Deferred call registered on fallback user');
-                    $globalsObj->intNums[$linkedid] = $pending['fallbackIntNum'];
+                    $globalsObj->intNums[$linkedid] = $fallbackIntNum;
                     unset($globalsObj->pendingCalls[$linkedid]);
                 } else {
                     $helper->writeToLog(array(
                         'linkedid' => $linkedid,
-                        'fallbackIntNum' => $pending['fallbackIntNum'],
                         'fallbackUserId' => $pending['fallbackUserId'],
+                        'fallbackIntNum' => $pending['fallbackIntNum'],
                     ), 'Deferred call registration on fallback failed');
                 }
             }
