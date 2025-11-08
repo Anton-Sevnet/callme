@@ -398,6 +398,70 @@ $pamiClient->registerEventListener(
     }
 );
 
+// Расширенное логирование событий очередей (для диагностики Asterisk 1.8)
+$queueDebugEvents = array(
+    'AgentCalled',
+    'AgentRingNoAnswer',
+    'AgentComplete',
+    'QueueCallerJoin',
+    'QueueCallerLeave',
+    'QueueCallerAbandon',
+    'Join',
+    'Leave'
+);
+
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($queueDebugEvents) {
+        $eventName = $event->getName();
+        if (!in_array($eventName, $queueDebugEvents, true)) {
+            return;
+        }
+
+        $keys = $event->getKeys();
+        $log = "\n------------------------\n";
+        $log .= date("Y.m.d G:i:s") . "\n";
+        $log .= "QueueDebug Event: " . $eventName . "\n";
+
+        $interestingKeys = array(
+            'Queue',
+            'Interface',
+            'Channel',
+            'Destination',
+            'CallerIDNum',
+            'CallerIDName',
+            'DestCallerIDNum',
+            'DestCallerIDName',
+            'AgentCalled',
+            'Member',
+            'MemberName',
+            'Uniqueid',
+            'UniqueID',
+            'DestUniqueid',
+            'DestUniqueID',
+            'RingTime',
+            'HoldTime',
+            'TalkTime',
+            'Position'
+        );
+
+        $seen = array();
+        foreach ($interestingKeys as $key) {
+            if (isset($keys[$key]) && !isset($seen[$key])) {
+                $log .= $key . ': ' . $keys[$key] . "\n";
+                $seen[$key] = true;
+            }
+        }
+
+        $log .= "RAW:\n" . $event->getRawContent() . "\n";
+        $log .= "------------------------\n";
+
+        file_put_contents(getcwd() . '/logs/full.log', $log, FILE_APPEND);
+    },
+    function (EventMessage $event) use ($queueDebugEvents) {
+        return in_array($event->getName(), $queueDebugEvents, true);
+    }
+);
+
 $pamiClient->registerEventListener(
             function (EventMessage $event) use ($helper,$callami,$globalsObj){
                 //выгребаем параметры звонка
