@@ -26,6 +26,8 @@ class Globals {
     public $pendingCallsByCaller = array(); // [callerNumber => [linkedid => true]]
     //Отложенные регистрации (когда нет ответственного)
     public $pendingCalls = array(); // [linkedid => [...]]
+    //Активные звонки, уже зарегистрированные в Б24, сгруппированные по номеру абонента
+    public $activeCallsByCaller = array(); // [callerNumber => [linkedid => true]]
 	//массив с uniqueid внешних звонкнов
     public $uniqueids = array();
 	//массив FullFname (url'ы записей разговоров), ключ - Uniqueid из asterisk

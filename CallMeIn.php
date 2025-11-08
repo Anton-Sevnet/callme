@@ -388,6 +388,15 @@ function callme_handle_dial_begin_common(
     if (empty($linkedid) && $destUniqueId && isset($globalsObj->uniqueidToLinkedid[$destUniqueId])) {
         $linkedid = $globalsObj->uniqueidToLinkedid[$destUniqueId];
     }
+    $normalizedCaller = callme_normalize_phone($callerNumberRaw);
+    if (empty($linkedid) && $normalizedCaller !== '' && !empty($globalsObj->activeCallsByCaller[$normalizedCaller])) {
+        foreach ($globalsObj->activeCallsByCaller[$normalizedCaller] as $activeLinkedid => $_) {
+            if (isset($globalsObj->callIdByLinkedid[$activeLinkedid])) {
+                $linkedid = $activeLinkedid;
+                break;
+            }
+        }
+    }
     if (empty($linkedid)) {
         $linkedid = $callUniqueid;
     }
@@ -395,8 +404,6 @@ function callme_handle_dial_begin_common(
     if (!empty($destUniqueId)) {
         $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
     }
-
-    $normalizedCaller = callme_normalize_phone($callerNumberRaw);
 
     $pendingLinkedid = null;
     if (isset($globalsObj->pendingCalls[$linkedid])) {
@@ -592,6 +599,12 @@ function callme_handle_dial_begin_common(
         if ($linkedid !== $callUniqueid) {
             $globalsObj->calls[$linkedid] = $call_id;
         }
+    }
+    if ($call_id && $normalizedCaller !== '') {
+        if (!isset($globalsObj->activeCallsByCaller[$normalizedCaller])) {
+            $globalsObj->activeCallsByCaller[$normalizedCaller] = array();
+        }
+        $globalsObj->activeCallsByCaller[$normalizedCaller][$linkedid] = true;
     }
     $globalsObj->intNums[$callUniqueid] = $exten;
     if ($linkedid && !isset($globalsObj->intNums[$linkedid]) && isset($globalsObj->callIdByLinkedid[$linkedid])) {
@@ -1556,6 +1569,16 @@ $pamiClient->registerEventListener(
                     }
                     unset($globalsObj->ringingIntNums[$linkedid]);
                     unset($globalsObj->callShownCards[$linkedid]);
+                    if ($linkedid && !empty($globalsObj->activeCallsByCaller)) {
+                        foreach ($globalsObj->activeCallsByCaller as $callerNumber => $activeLinkedids) {
+                            if (isset($activeLinkedids[$linkedid])) {
+                                unset($globalsObj->activeCallsByCaller[$callerNumber][$linkedid]);
+                                if (empty($globalsObj->activeCallsByCaller[$callerNumber])) {
+                                    unset($globalsObj->activeCallsByCaller[$callerNumber]);
+                                }
+                            }
+                        }
+                    }
                     return;
                 }
                 
@@ -1633,6 +1656,16 @@ $pamiClient->registerEventListener(
                     unset($globalsObj->ringingIntNums[$linkedid]);
                     if (isset($globalsObj->ringOrder[$linkedid])) {
                         unset($globalsObj->ringOrder[$linkedid]);
+                    }
+                    if (!empty($globalsObj->activeCallsByCaller)) {
+                        foreach ($globalsObj->activeCallsByCaller as $callerNumber => $activeLinkedids) {
+                            if (isset($activeLinkedids[$linkedid])) {
+                                unset($globalsObj->activeCallsByCaller[$callerNumber][$linkedid]);
+                                if (empty($globalsObj->activeCallsByCaller[$callerNumber])) {
+                                    unset($globalsObj->activeCallsByCaller[$callerNumber]);
+                                }
+                            }
+                        }
                     }
                 }
 
