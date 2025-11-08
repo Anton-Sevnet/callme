@@ -875,37 +875,69 @@ $pamiClient->registerEventListener(
                 $globalsObj->ringingIntNums[$callLinkedid] = array();
                 $globalsObj->ringOrder[$callLinkedid] = array();
 
-                // Отложим регистрацию до появления первого агента (или fallback)
-                $normalizedCaller = callme_normalize_phone($extNum);
-                $pendingData = array(
-                    'extNum' => $extNum,
-                    'normalized_caller' => $normalizedCaller,
-                    'line' => $exten,
-                    'crm_source' => $srmSource,
-                    'fallbackUserId' => $fallbackUserId,
-                    'fallbackIntNum' => $fallbackUserInt,
-                    'registered' => false,
-                    'fallback_used' => false,
-                    'ring_sequence' => array(),
-                    'registered_int' => null,
-                    'registered_user_id' => null,
-                    'crm_responsible_user_id' => $responsibleUserId,
-                    'primary_linkedid' => $callLinkedid,
-                );
-                $globalsObj->pendingCalls[$callLinkedid] = $pendingData;
-                $globalsObj->callCrmData[$callLinkedid] = array(
-                    'entity_type' => $crmData['entity_type'] ?? null,
-                    'entity_id' => $crmData['entity_id'] ?? null,
-                    'created' => false,
-                    'initial_responsible_user_id' => null,
-                    'current_responsible_user_id' => null,
-                    'crm_responsible_user_id' => $responsibleUserId,
-                );
-                $helper->writeToLog(array(
-                    'fallbackUserId' => $fallbackUserId,
-                    'fallbackIntNum' => $fallbackUserInt,
-                    'prefetchedResponsible' => $selectedIntNum,
-                ), 'Call registration deferred until agent detected');
+                $registerIntNum = null;
+                $registerUserId = null;
+                if ($selectedIntNum && $selectedUserId) {
+                    $registerIntNum = $selectedIntNum;
+                    $registerUserId = $selectedUserId;
+                } elseif ($fallbackUserInt) {
+                    $registerIntNum = $fallbackUserInt;
+                    $registerUserId = $fallbackUserId ?: null;
+                }
+
+                $callResult = null;
+                if ($registerIntNum) {
+                    $callResult = $helper->runInputCall(
+                        $registerIntNum,
+                        $extNum,
+                        $exten,
+                        $srmSource,
+                        $registerUserId
+                    );
+                } else {
+                    $helper->writeToLog(array(
+                        'linkedid' => $callLinkedid,
+                        'extNum' => $extNum,
+                        'line' => $exten,
+                        'responsibleUserId' => $responsibleUserId,
+                        'fallbackUserId' => $fallbackUserId,
+                    ), 'Immediate registration skipped: no internal number resolved');
+                }
+
+                if ($callResult && isset($callResult['CALL_ID'])) {
+                    $call_id = $callResult['CALL_ID'];
+                    $globalsObj->calls[$callLinkedid] = $call_id;
+                    $globalsObj->callIdByLinkedid[$callLinkedid] = $call_id;
+                    $globalsObj->uniqueidToLinkedid[$callLinkedid] = $callLinkedid;
+                    $globalsObj->intNums[$callLinkedid] = $registerIntNum;
+
+                    $globalsObj->callCrmData[$callLinkedid] = array(
+                        'entity_type' => $callResult['CRM_ENTITY_TYPE'] ?? ($crmData['entity_type'] ?? null),
+                        'entity_id' => $callResult['CRM_ENTITY_ID'] ?? ($crmData['entity_id'] ?? null),
+                        'created' => !empty($callResult['CRM_CREATED_LEAD']) || !empty($callResult['CRM_CREATED_ENTITIES']),
+                        'initial_responsible_user_id' => $registerUserId,
+                        'current_responsible_user_id' => $registerUserId,
+                        'crm_responsible_user_id' => $responsibleUserId,
+                    );
+
+                    $helper->writeToLog(array(
+                        'linkedid' => $callLinkedid,
+                        'intNum' => $registerIntNum,
+                        'userId' => $registerUserId,
+                        'CALL_ID' => $call_id,
+                        'crm_responsible_user_id' => $responsibleUserId,
+                        'fallbackUserId' => $fallbackUserId,
+                    ), 'Immediate call registered on agent');
+                } else {
+                    $helper->writeToLog(array(
+                        'linkedid' => $callLinkedid,
+                        'extNum' => $extNum,
+                        'line' => $exten,
+                        'responsibleUserId' => $responsibleUserId,
+                        'selectedIntNum' => $selectedIntNum,
+                        'fallbackIntNum' => $fallbackUserInt,
+                    ), 'Immediate call registration failed');
+                }
 
                 $globalsObj->Durations[$callLinkedid] = 0;
                 $globalsObj->Dispositions[$callLinkedid] = "NO ANSWER";
