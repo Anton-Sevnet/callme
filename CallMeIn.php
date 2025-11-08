@@ -10,6 +10,29 @@
 
 require __DIR__ . '/vendor/autoload.php';
 
+if (!function_exists('callme_normalize_phone')) {
+    function callme_normalize_phone($number) {
+        $digits = preg_replace('/\D+/', '', (string)$number);
+        if ($digits === '') {
+            return '';
+        }
+        if (strlen($digits) === 11 && $digits[0] === '8') {
+            $digits = '7' . substr($digits, 1);
+        } elseif (strlen($digits) === 11 && $digits[0] === '7') {
+            // already correct
+        } elseif (strlen($digits) === 10) {
+            $digits = '7' . $digits;
+        }
+        if (strlen($digits) === 11 && $digits[0] === '7') {
+            return '+7' . substr($digits, 1);
+        }
+        if (strpos($digits, '+7') === 0) {
+            return $digits;
+        }
+        return $digits === '' ? '' : $digits;
+    }
+}
+
 /*
 * start: for events listener
 */
@@ -319,8 +342,10 @@ $pamiClient->registerEventListener(
                 $globalsObj->ringOrder[$callLinkedid] = array();
 
                 // Отложим регистрацию до появления первого агента (или fallback)
+                $normalizedCaller = callme_normalize_phone($extNum);
                 $pendingData = array(
                     'extNum' => $extNum,
+                    'normalized_caller' => $normalizedCaller,
                     'line' => $exten,
                     'crm_source' => $srmSource,
                     'fallbackUserId' => $fallbackUserId,
@@ -331,6 +356,7 @@ $pamiClient->registerEventListener(
                     'registered_int' => null,
                     'registered_user_id' => null,
                     'crm_responsible_user_id' => $responsibleUserId,
+                    'primary_linkedid' => $callLinkedid,
                 );
                 $globalsObj->pendingCalls[$callLinkedid] = $pendingData;
                 $globalsObj->callCrmData[$callLinkedid] = array(
@@ -341,10 +367,12 @@ $pamiClient->registerEventListener(
                     'current_responsible_user_id' => null,
                     'crm_responsible_user_id' => $responsibleUserId,
                 );
-                if (!isset($globalsObj->pendingCallsByCaller[$extNum])) {
-                    $globalsObj->pendingCallsByCaller[$extNum] = array();
+                if ($normalizedCaller !== '') {
+                    if (!isset($globalsObj->pendingCallsByCaller[$normalizedCaller])) {
+                        $globalsObj->pendingCallsByCaller[$normalizedCaller] = array();
+                    }
+                    $globalsObj->pendingCallsByCaller[$normalizedCaller][$callLinkedid] = true;
                 }
-                $globalsObj->pendingCallsByCaller[$extNum][$callLinkedid] = true;
                 $helper->writeToLog(array(
                     'fallbackUserId' => $fallbackUserId,
                     'fallbackIntNum' => $fallbackUserInt,
@@ -647,26 +675,48 @@ $pamiClient->registerEventListener(
             $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
         }
 
-        $callerNumber = $event->getCallerIdNum();
+        $callerNumberRaw = $event->getCallerIdNum();
+        $normalizedCaller = callme_normalize_phone($callerNumberRaw);
 
-        $resolvedLinkedid = $linkedid;
-        if (!isset($globalsObj->pendingCalls[$resolvedLinkedid]) && isset($globalsObj->uniqueidToLinkedid[$resolvedLinkedid]) && isset($globalsObj->pendingCalls[$globalsObj->uniqueidToLinkedid[$resolvedLinkedid]])) {
-            $resolvedLinkedid = $globalsObj->uniqueidToLinkedid[$resolvedLinkedid];
-        }
-        if (!isset($globalsObj->pendingCalls[$resolvedLinkedid]) && !empty($callerNumber) && isset($globalsObj->pendingCallsByCaller[$callerNumber])) {
-            foreach ($globalsObj->pendingCallsByCaller[$callerNumber] as $candidateLinkedid => $_dummy) {
-                if (isset($globalsObj->pendingCalls[$candidateLinkedid])) {
-                    $resolvedLinkedid = $candidateLinkedid;
-                    break;
+        $pendingLinkedid = null;
+        if (isset($globalsObj->pendingCalls[$linkedid])) {
+            $pendingLinkedid = $linkedid;
+        } else {
+            if (isset($globalsObj->uniqueidToLinkedid[$linkedid])) {
+                $possible = $globalsObj->uniqueidToLinkedid[$linkedid];
+                if (isset($globalsObj->pendingCalls[$possible])) {
+                    $pendingLinkedid = $possible;
+                }
+            }
+            if ($pendingLinkedid === null && $normalizedCaller !== '' && isset($globalsObj->pendingCallsByCaller[$normalizedCaller])) {
+                foreach ($globalsObj->pendingCallsByCaller[$normalizedCaller] as $candidateLinkedid => $_dummy) {
+                    if (isset($globalsObj->pendingCalls[$candidateLinkedid])) {
+                        $pendingLinkedid = $candidateLinkedid;
+                        break;
+                    }
                 }
             }
         }
-        if ($resolvedLinkedid !== $linkedid) {
-            $linkedid = $resolvedLinkedid;
-            $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
-            if (!empty($destUniqueId)) {
-                $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
+        if ($pendingLinkedid !== null) {
+            $pendingPrimary = $globalsObj->pendingCalls[$pendingLinkedid]['primary_linkedid'] ?? $pendingLinkedid;
+            if ($pendingPrimary !== $pendingLinkedid) {
+                if (!isset($globalsObj->pendingCalls[$pendingPrimary])) {
+                    $globalsObj->pendingCalls[$pendingPrimary] = $globalsObj->pendingCalls[$pendingLinkedid];
+                }
+                $normKey = $globalsObj->pendingCalls[$pendingLinkedid]['normalized_caller'] ?? '';
+                if ($normKey !== '' && isset($globalsObj->pendingCallsByCaller[$normKey])) {
+                    unset($globalsObj->pendingCallsByCaller[$normKey][$pendingLinkedid]);
+                    $globalsObj->pendingCallsByCaller[$normKey][$pendingPrimary] = true;
+                }
+                unset($globalsObj->pendingCalls[$pendingLinkedid]);
+                $pendingLinkedid = $pendingPrimary;
             }
+            $linkedid = $pendingLinkedid;
+        }
+
+        $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
+        if (!empty($destUniqueId)) {
+            $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
         }
 
         if (!isset($globalsObj->ringingIntNums[$linkedid])) {
@@ -692,7 +742,8 @@ $pamiClient->registerEventListener(
             'userId' => $userId,
             'ringOrder' => $globalsObj->ringOrder[$linkedid],
             'activeRinging' => array_keys($globalsObj->ringingIntNums[$linkedid]),
-            'caller' => $callerNumber,
+            'callerRaw' => $callerNumberRaw,
+            'callerNormalized' => $normalizedCaller,
         ), 'DialBegin: RING state updated');
 
         $call_id = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
@@ -743,7 +794,7 @@ $pamiClient->registerEventListener(
                         $pending['registered'] = true;
                         $pending['registered_int'] = $candidateIntNum;
                         $pending['registered_user_id'] = $candidateUserId;
-                        $pendingCaller = $pending['extNum'] ?? null;
+                        $pendingCaller = $pending['normalized_caller'] ?? null;
                         if ($pendingCaller && isset($globalsObj->pendingCallsByCaller[$pendingCaller][$linkedid])) {
                             unset($globalsObj->pendingCallsByCaller[$pendingCaller][$linkedid]);
                             if (empty($globalsObj->pendingCallsByCaller[$pendingCaller])) {
@@ -792,7 +843,7 @@ $pamiClient->registerEventListener(
                         $pending['registered'] = true;
                         $pending['registered_int'] = $fallbackIntNum;
                         $pending['registered_user_id'] = $pending['fallbackUserId'];
-                        $pendingCaller = $pending['extNum'] ?? null;
+                        $pendingCaller = $pending['normalized_caller'] ?? null;
                         if ($pendingCaller && isset($globalsObj->pendingCallsByCaller[$pendingCaller][$linkedid])) {
                             unset($globalsObj->pendingCallsByCaller[$pendingCaller][$linkedid]);
                             if (empty($globalsObj->pendingCallsByCaller[$pendingCaller])) {
@@ -1207,7 +1258,7 @@ $pamiClient->registerEventListener(
                 if (empty($call_id)) {
                     $helper->writeToLog("No call_id for Uniqueid $callLinkedid, skipping HangupEvent", 'HangupEvent FALLBACK');
                     if (isset($globalsObj->pendingCalls[$linkedid])) {
-                        $pendingCaller = $globalsObj->pendingCalls[$linkedid]['extNum'] ?? null;
+                        $pendingCaller = $globalsObj->pendingCalls[$linkedid]['normalized_caller'] ?? null;
                         if ($pendingCaller && isset($globalsObj->pendingCallsByCaller[$pendingCaller][$linkedid])) {
                             unset($globalsObj->pendingCallsByCaller[$pendingCaller][$linkedid]);
                             if (empty($globalsObj->pendingCallsByCaller[$pendingCaller])) {
@@ -1282,7 +1333,7 @@ $pamiClient->registerEventListener(
                 }
                 if ($linkedid) {
                     if (isset($globalsObj->pendingCalls[$linkedid])) {
-                        $pendingCaller = $globalsObj->pendingCalls[$linkedid]['extNum'] ?? null;
+                        $pendingCaller = $globalsObj->pendingCalls[$linkedid]['normalized_caller'] ?? null;
                         if ($pendingCaller && isset($globalsObj->pendingCallsByCaller[$pendingCaller][$linkedid])) {
                             unset($globalsObj->pendingCallsByCaller[$pendingCaller][$linkedid]);
                             if (empty($globalsObj->pendingCallsByCaller[$pendingCaller])) {
