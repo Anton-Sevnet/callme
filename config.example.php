@@ -61,6 +61,9 @@ return array(
         '8003' => 'CALL',
         'default_crm_source' => 'CALL',
     ),
+
+    // ID of the list with trunk → source mapping (run php_applets/install_trunk_source_iblock.php). Adjust to your portal.
+    'roi_source_iblock_id' => 17,
     
     // Users who should see call cards
     'user_show_cards' => array(

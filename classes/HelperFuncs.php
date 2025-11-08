@@ -9,6 +9,13 @@
 
 class HelperFuncs {
 
+    /**
+     * Кэш соответствий номеров и источников ROI.
+     *
+     * @var array<string,string>|null
+     */
+    private static $roiSourceCache = null;
+
 	/**
 	 * Get Internal number by using USER_ID.
 	 *
@@ -984,6 +991,107 @@ class HelperFuncs {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * Получить CRM_SOURCE для указанного внешнего номера по данным инфоблока.
+	 *
+	 * @param string $number
+	 * @return string|null
+	 */
+	public function getRoiSourceByNumber($number) {
+		$digits = preg_replace('/\D+/', '', (string)$number);
+		if ($digits === '') {
+			return null;
+		}
+
+		$map = $this->loadRoiSourceMap();
+		return $map[$digits] ?? null;
+	}
+
+	/**
+	 * Сбросить и пересчитать кэш источников.
+	 *
+	 * @return void
+	 */
+	public function refreshRoiSourceCache() {
+		self::$roiSourceCache = null;
+		$this->loadRoiSourceMap();
+	}
+
+	/**
+	 * Загрузить карту соответствий транков и источников из инфоблока.
+	 *
+	 * @return array<string,string>
+	 */
+	private function loadRoiSourceMap() {
+		if (is_array(self::$roiSourceCache)) {
+			return self::$roiSourceCache;
+		}
+
+		$iblockId = (int)$this->getConfig('roi_source_iblock_id');
+		if ($iblockId <= 0) {
+			self::$roiSourceCache = array();
+			return self::$roiSourceCache;
+		}
+
+		$propertyCode = 'ISTOCHNIK_DLYA_ANALITIKI_ROI';
+		$response = $this->getBitrixApi(array(
+			'IBLOCK_TYPE_ID' => 'lists',
+			'IBLOCK_ID' => $iblockId,
+			'select' => array('ID', 'NAME', 'PROPERTY_' . $propertyCode, 'PROPERTY_' . $propertyCode . '_VALUE'),
+		), 'lists.element.get');
+
+		$items = array();
+		if ($response && isset($response['result'])) {
+			if (isset($response['result']['items']) && is_array($response['result']['items'])) {
+				$items = $response['result']['items'];
+			} elseif (is_array($response['result'])) {
+				$items = $response['result'];
+			}
+		}
+
+		$map = array();
+		if (!is_array($items)) {
+			self::$roiSourceCache = $map;
+			return self::$roiSourceCache;
+		}
+
+		foreach ($items as $item) {
+			if (!is_array($item)) {
+				continue;
+			}
+			$name = isset($item['NAME']) ? $item['NAME'] : '';
+			$number = preg_replace('/\D+/', '', (string)$name);
+			if ($number === '') {
+				continue;
+			}
+
+			$propertyKey = 'PROPERTY_' . $propertyCode . '_VALUE';
+			$value = $item[$propertyKey] ?? ($item['PROPERTY_' . $propertyCode] ?? null);
+			if (is_array($value)) {
+				$value = reset($value);
+			}
+
+			if (!is_string($value) || trim($value) === '') {
+				continue;
+			}
+
+			$parts = array_map('trim', explode('|', $value));
+			if (count($parts) < 2) {
+				continue;
+			}
+
+			$statusId = $parts[1];
+			if ($statusId === '') {
+				continue;
+			}
+
+			$map[$number] = $statusId;
+		}
+
+		self::$roiSourceCache = $map;
+		return self::$roiSourceCache;
 	}
 
 	/**

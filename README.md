@@ -543,6 +543,13 @@ return array(
 );
 ```
 
+### Универсальный список для источников
+
+- Скрипт `php_applets/install_trunk_source_iblock.php` через REST Bitrix24 создаёт список **«Карта транков и источников звонков»** (`lists.add`), добавляет поле-справочник `ISTOCHNIK_DLYA_ANALITIKI_ROI` (`lists.field.add`) и прописывает ID в `config.php` (`roi_source_iblock_id`). Параметры: `CONFIG=/path/to/config.php`, `API_URL=https://.../rest/` (опционально).
+- Синхронизатор `php_applets/sync_trunk_sources.php` обращается к Bitrix24 (`crm.status.list`, `lists.field.update`) и обновляет варианты поля в формате `NAME | STATUS_ID`. Запуск: `php sync_trunk_sources.php IBLOCK_ID=<ID> [CONFIG=...] [API_URL=...]` либо вызов вебхуком с этими параметрами.
+- В элементах списка указываются телефонные номера транков (поле `NAME`). При регистрации звонка CallMe очищает номер от нецифровых символов, находит совпадение в списке и подставляет соответствующий `STATUS_ID` в параметр `CRM_SOURCE`.
+- Если номер отсутствует в списке, используется резервная логика из настройки `bx24_crm_source` в конфиге.
+
 ### Настройка вебхука в Битрикс24:
 
 1. Настройки → Телефония → Вебхуки

@@ -72,6 +72,24 @@ cat ~/.ssh/deploy_key
 
 ---
 
+### 1.4. Создание списка источников в Битрикс24
+
+После первого деплоя выполните подготовительные скрипты:
+
+```bash
+cd /var/www/callme/local/cust_app
+php php_applets/install_trunk_source_iblock.php CONFIG=/var/www/callme/config.php \
+    API_URL=https://your-domain.bitrix24.ru/rest/USER_ID/WEBHOOK/
+php php_applets/sync_trunk_sources.php IBLOCK_ID=<список_ID> CONFIG=/var/www/callme/config.php \
+    API_URL=https://your-domain.bitrix24.ru/rest/USER_ID/WEBHOOK/
+```
+
+- Поле `NAME` элементов списка должно содержать номер линии (любые разделители будут удалены).
+- Пользовательское свойство `ISTOCHNIK_DLYA_ANALITIKI_ROI` заполняется в формате `Название источника | STATUS_ID` (обновляется автоматически синхронизатором).
+- ID списка сохраняется в параметре `roi_source_iblock_id` (config.php/config.example.php). При изменении портала значение может отличаться.
+
+---
+
 ## 2. Вариант A: GitHub Actions (рекомендуется)
 
 ### 2.1. Настройка GitHub Secrets

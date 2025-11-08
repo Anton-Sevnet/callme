@@ -314,6 +314,11 @@ $pamiClient->registerEventListener(
                     $bx24_source = array('default_crm_source' => 'CALL');
                 }
                 $srmSource = array_key_exists($exten, $bx24_source) ? $bx24_source[$exten] : $bx24_source["default_crm_source"];
+
+                $roiSource = $helper->getRoiSourceByNumber($exten);
+                if ($roiSource !== null) {
+                    $srmSource = $roiSource;
+                }
                 
                 // Регистрируем звонок в Битрикс24 с ПРАВИЛЬНЫМ внутренним номером
                 $callResult = $helper->runInputCall($intNum, $extNum, $exten, $srmSource);
