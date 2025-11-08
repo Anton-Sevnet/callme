@@ -315,6 +315,47 @@ function callme_show_cards_for_ringing($linkedid, $helper, $globalsObj)
     }
 }
 
+/**
+ * Извлекает внутренний номер (2–6 цифр) из представления канала/строки дозвона.
+ *
+ * @param string ...$sources
+ * @return string|null
+ */
+function callme_extract_internal_number(...$sources)
+{
+    $patterns = array(
+        '/Local\/(\d+)(?=@)/',
+        '/SIP\/(\d+)(?=[\-\/]|$)/',
+        '/PJSIP\/(\d+)(?=[\-\/@]|$)/',
+        '/^(\d{2,6})$/'
+    );
+
+    foreach ($sources as $value) {
+        if (!is_string($value) || $value === '') {
+            continue;
+        }
+
+        $parts = preg_split('/[&,\s]+/', $value);
+        foreach ($parts as $part) {
+            $part = trim($part);
+            if ($part === '') {
+                continue;
+            }
+
+            foreach ($patterns as $pattern) {
+                if (preg_match($pattern, $part, $matches)) {
+                    $number = $matches[1];
+                    if (strlen($number) >= 2 && strlen($number) <= 6) {
+                        return $number;
+                    }
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
 //обрабатываем NewchannelEventIncoming события 
 //1. Создание лидов
 //2. Запись звонков
@@ -731,11 +772,34 @@ $pamiClient->registerEventListener(
         $callUniqueid = $event->getKey("Uniqueid");
         $linkedid = $event->getKey("Linkedid");
         $destUniqueId = $event->getKey("DestUniqueID");
-        $exten = $event->getKey("DialString");
-
-        if (empty($exten)) {
+        $rawDialString = (string) $event->getKey("DialString");
+        if ($rawDialString === '') {
             return;
         }
+
+        $resolvedInt = callme_extract_internal_number(
+            $rawDialString,
+            $event->getKey("DestChannel"),
+            $event->getKey("Channel"),
+            $event->getKey("DestCallerIDNum"),
+            $event->getKey("DestCallerIDName")
+        );
+
+        if (!$resolvedInt) {
+            $helper->writeToLog(array(
+                'uniqueid' => $callUniqueid,
+                'linkedid_raw' => $linkedid,
+                'destUniqueId' => $destUniqueId,
+                'dialString' => $rawDialString,
+                'channel' => $event->getKey("Channel"),
+                'destChannel' => $event->getKey("DestChannel"),
+                'destCallerIdNum' => $event->getKey("DestCallerIDNum"),
+                'destCallerIdName' => $event->getKey("DestCallerIDName"),
+            ), 'DialBegin: unable to resolve internal number');
+            return;
+        }
+
+        $exten = $resolvedInt;
 
         if (empty($linkedid) && isset($globalsObj->uniqueidToLinkedid[$callUniqueid])) {
             $linkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid];
@@ -815,6 +879,7 @@ $pamiClient->registerEventListener(
         $helper->writeToLog(array(
             'linkedid' => $linkedid,
             'intNum' => $exten,
+            'dialStringRaw' => $rawDialString,
             'userId' => $userId,
             'ringOrder' => $globalsObj->ringOrder[$linkedid],
             'activeRinging' => array_keys($globalsObj->ringingIntNums[$linkedid]),
