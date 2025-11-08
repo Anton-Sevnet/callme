@@ -65,7 +65,7 @@
 ## Проверка конфигурации
 
 - Убедитесь, что в `config.php` заполнены `bitrixApiUrl`, `extentions`, `user_show_cards`, `fallback_responsible_user_id`.
-- На АТС должны быть применены `extensions_custom.callme.conf` и `extensions_override_freepbx.callme.conf`, чтобы VarSet `CALLME_CARD_STATE` действительно отправлялся.
+- На АТС должен быть подключён блок `macro-dial-one-custom` из `extensions_custom.callme.conf`, чтобы VarSet `CALLME_CARD_STATE` действительно отправлялся (проверьте `dialplan show macro-dial-one`).
 - Для отладки включите `CallMeDEBUG`, VarSet события видно в `logs/CallMe.log`.
 
 ## Что тестировать
