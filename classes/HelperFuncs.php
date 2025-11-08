@@ -10,6 +10,20 @@
 class HelperFuncs {
 
     /**
+     * Кэш соответствий USER_ID ↔ внутренний номер.
+     *
+     * @var array<string,int>
+     */
+    private static $userIdByIntCache = array();
+
+    /**
+     * Кэш соответствий USER_ID ↔ внутренний номер.
+     *
+     * @var array<int,string>
+     */
+    private static $intByUserIdCache = array();
+
+    /**
      * Кэш соответствий номеров и источников ROI.
      *
      * @var array<string,string>|null
@@ -27,12 +41,15 @@ class HelperFuncs {
         $this->writeToLog(NULL, 'getIntNumByUSER_ID');
 	    $result = $this->getBitrixApi(array("ID" => $userid), 'user.get');
         $this->writeToLog($result, 'getIntNumByUSER_ID');
-	    if ($result){
-
-	        return $result['result'][0]['UF_PHONE_INNER'];
-	    } else {
-	        return false;
+	    if ($result && isset($result['result'][0]['UF_PHONE_INNER'])){
+            $intNum = (string)$result['result'][0]['UF_PHONE_INNER'];
+            if ($intNum !== '') {
+                self::$intByUserIdCache[(int)$userid] = $intNum;
+                self::$userIdByIntCache[$intNum] = (int)$userid;
+            }
+	        return $intNum;
 	    }
+        return false;
 
 	}
 
@@ -43,13 +60,22 @@ class HelperFuncs {
 	 *
 	 * @return int user id
 	 */
-	public function getUSER_IDByIntNum($intNum){ 
+	public function getUSER_IDByIntNum($intNum){
+        $intNum = (string)$intNum;
+        if ($intNum === '') {
+            return false;
+        }
+        if (isset(self::$userIdByIntCache[$intNum])) {
+            return self::$userIdByIntCache[$intNum];
+        }
 	    $result = $this->getBitrixApi(array('FILTER' => array ('UF_PHONE_INNER' => $intNum,),), 'user.get');
-	    if ($result){
-	        return $result['result'][0]['ID'];
-	    } else {
-	        return false;
+	    if ($result && isset($result['result'][0]['ID'])){
+            $userId = (int)$result['result'][0]['ID'];
+            self::$userIdByIntCache[$intNum] = $userId;
+            self::$intByUserIdCache[$userId] = $intNum;
+	        return $userId;
 	    }
+        return false;
 	}
 
 	/**
@@ -354,7 +380,7 @@ class HelperFuncs {
             'LINE_NUMBER' => $line,
             'TYPE' => 2,
             'CRM_CREATE' => 1,
-            'SHOW' => 1,
+            'SHOW' => 0,
         );
         if ($userId !== null) {
             $data['USER_ID'] = (int)$userId;
@@ -786,6 +812,26 @@ class HelperFuncs {
 		} else 
 			return false;
 	}
+
+    /**
+     * Показываем карточку звонка группе пользователей.
+     *
+     * @param string $call_id
+     * @param array<int> $userIds
+     * @return array|false
+     */
+    public function showInputCallForUsers($call_id, array $userIds) {
+        $userIds = array_unique(array_filter(array_map('intval', $userIds), function ($value) {
+            return $value > 0;
+        }));
+        if (empty($userIds)) {
+            return false;
+        }
+        return $this->getBitrixApi(array(
+            'CALL_ID' => $call_id,
+            'USERS' => array_values($userIds),
+        ), 'telephony.externalcall.show');
+    }
 
     /**
      * Show input call data for user with internal number

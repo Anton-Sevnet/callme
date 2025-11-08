@@ -249,6 +249,72 @@ function ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pin
     }
 }
 
+/**
+ * Показываем карточки звонка всем текущим абонентам в состоянии RING.
+ *
+ * @param string $linkedid
+ * @param HelperFuncs $helper
+ * @param Globals $globalsObj
+ * @return void
+ */
+function callme_show_cards_for_ringing($linkedid, $helper, $globalsObj)
+{
+    if (empty($linkedid)) {
+        return;
+    }
+    $call_id = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
+    if (!$call_id) {
+        return;
+    }
+    if (empty($globalsObj->ringingIntNums[$linkedid]) || !is_array($globalsObj->ringingIntNums[$linkedid])) {
+        return;
+    }
+
+    $userIds = array();
+    $intNumsShown = array();
+    foreach ($globalsObj->ringingIntNums[$linkedid] as $intNum => &$ringData) {
+        $state = $ringData['state'] ?? 'RING';
+        if ($state !== 'RING') {
+            continue;
+        }
+        if (!empty($globalsObj->callShownCards[$linkedid][$intNum])) {
+            continue;
+        }
+        $userId = $ringData['user_id'] ?? $helper->getUSER_IDByIntNum($intNum);
+        if (!$userId) {
+            continue;
+        }
+        $ringData['user_id'] = $userId;
+        $userIds[] = $userId;
+        $intNumsShown[$intNum] = $userId;
+    }
+    unset($ringData);
+
+    if (empty($userIds)) {
+        return;
+    }
+
+    $result = $helper->showInputCallForUsers($call_id, $userIds);
+    $helper->writeToLog(array(
+        'linkedid' => $linkedid,
+        'call_id' => $call_id,
+        'userIds' => $userIds,
+        'result' => $result,
+    ), 'show input call bulk');
+
+    if (!empty($result)) {
+        foreach ($intNumsShown as $intNum => $userId) {
+            if (!isset($globalsObj->callShownCards[$linkedid])) {
+                $globalsObj->callShownCards[$linkedid] = array();
+            }
+            $globalsObj->callShownCards[$linkedid][$intNum] = true;
+            if (isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
+                $globalsObj->ringingIntNums[$linkedid][$intNum]['shown'] = true;
+            }
+        }
+    }
+}
+
 //обрабатываем NewchannelEventIncoming события 
 //1. Создание лидов
 //2. Запись звонков
@@ -393,7 +459,7 @@ $pamiClient->registerEventListener(
                         && (strpos($event->getContext(), "trunk") != -1)
                         && ($event->getName() == "Newchannel")
                         //проверяем на вхождение в массив
-                        && in_array($event->getExtension(), $globalsObj->extentions)
+        && in_array($event->getExtension(), $globalsObj->extentions)
                         ;
                 }
         );
@@ -418,6 +484,12 @@ $pamiClient->registerEventListener(
         echo $event->getRawContent()."\n";
 
         echo "intNum ".$intNum." extNum ".$extNum." \n";
+
+        $callerLen = strlen(preg_replace('/\D+/', '', (string)$intNum));
+        $channel = $event->getChannel();
+        if ($callerLen > 4 || strpos($channel ?? '', 'Local/') === 0) {
+            return "";
+        }
 
         $call_id = $helper->runOutputCall($intNum,$extNum, "");
         $result = $helper->showOutputCall($intNum, $call_id);
@@ -449,13 +521,17 @@ $pamiClient->registerEventListener(
 
     },function (EventMessage $event) use ($globalsObj){
 
-        return
-            ($event instanceof NewchannelEvent)
-            && ($event->getExtension() !== 's')
+    $callerLen = strlen(preg_replace('/\D+/', '', (string)$event->getCallerIdNum()));
+    $channel = $event->getKey('Channel') ?? '';
+    return
+        ($event instanceof NewchannelEvent)
+        && ($event->getExtension() !== 's')
 //            && ($event->getContext() === 'E1' || $event->getContext() == 'office')
             // Если user_show_cards пуст - показываем всем (Битрикс сам определит ответственного)
             // Если заполнен - фильтруем по списку внутренних номеров
             && (empty($globalsObj->user_show_cards) || in_array($event->getCallerIdNum(), $globalsObj->user_show_cards))
+            && ($callerLen <= 4)
+            && (strpos($channel, 'Local/') !== 0)
             ;
 }
 );
@@ -881,25 +957,9 @@ $pamiClient->registerEventListener(
             return;
         }
 
-        if (!isset($globalsObj->callShownCards[$linkedid])) {
-            $globalsObj->callShownCards[$linkedid] = array();
-        }
-
-        if ($userId && (empty($globalsObj->user_show_cards) || in_array($exten, $globalsObj->user_show_cards))) {
-            if (empty($globalsObj->callShownCards[$linkedid][$exten])) {
-                $result = $helper->showInputCall($exten, $call_id);
-                $helper->writeToLog(var_export($result, true), "show input card to $exten ");
-                $helper->writeToLog("show input call to ".$exten);
-                if ($result) {
-                    $globalsObj->callShownCards[$linkedid][$exten] = true;
-                    if (isset($globalsObj->ringingIntNums[$linkedid][$exten])) {
-                        $globalsObj->ringingIntNums[$linkedid][$exten]['shown'] = true;
-                    }
-                }
-            }
-            echo "\n-------------------------------------------------------------------\n\r";
-            echo "\n\r";
-        }
+        callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
+        echo "\n-------------------------------------------------------------------\n\r";
+        echo "\n\r";
 
     },function (EventMessage $event) use ($globalsObj) {
     $uniqueid = $event->getKey("UniqueID");
