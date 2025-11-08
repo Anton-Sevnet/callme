@@ -42,6 +42,29 @@ use PAMI\Message\Event;
 use PAMI\Message\Event\HoldEvent;
 use PAMI\Message\Event\DialBeginEvent;
 use PAMI\Message\Event\DialEndEvent;
+use PAMI\Message\Event\DialEvent;
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper) {
+        $keys = $event->getKeys();
+        $logContext = array(
+            'SubEvent' => $keys['SubEvent'] ?? null,
+            'Channel' => $keys['Channel'] ?? null,
+            'Destination' => $keys['Destination'] ?? null,
+            'DialString' => $keys['DialString'] ?? null,
+            'CallerIDNum' => $keys['CallerIDNum'] ?? null,
+            'CallerIDName' => $keys['CallerIDName'] ?? null,
+            'DestCallerIDNum' => $keys['DestCallerIDNum'] ?? null,
+            'DestCallerIDName' => $keys['DestCallerIDName'] ?? null,
+            'Uniqueid' => $keys['UniqueID'] ?? ($keys['Uniqueid'] ?? null),
+            'DestUniqueid' => $keys['DestUniqueID'] ?? null,
+        );
+        $helper->writeToLog($logContext, 'DialEvent captured');
+        $helper->writeToLog($event->getRawContent(), 'DialEvent raw');
+    },
+    function (EventMessage $event) {
+        return $event instanceof DialEvent;
+    }
+);
 use PAMI\Message\Event\NewchannelEvent;
 use PAMI\Message\Event\VarSetEvent;
 use PAMI\Message\Event\HangupEvent;
