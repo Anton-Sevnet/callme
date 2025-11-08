@@ -19,7 +19,9 @@ class Globals {
     //Список внутренних номеров, у которых показана карточка для звонка
     public $callShownCards = array(); // [linkedid => ['100'=>true]]
     //Список внутренних номеров, где в данный момент звонит телефон
-    public $ringingIntNums = array(); // [linkedid => ['100' => ['user_id'=>123]]]
+    public $ringingIntNums = array(); // [linkedid => ['100' => ['user_id'=>123, 'shown'=>bool, 'state'=>'RING']]]
+    //Порядок появления внутренних номеров в состоянии RING
+    public $ringOrder = array(); // [linkedid => ['100','101']]
     //Отложенные регистрации (когда нет ответственного)
     public $pendingCalls = array(); // [linkedid => [...]]
 	//массив с uniqueid внешних звонкнов
