@@ -12,6 +12,12 @@ class Globals {
     static private $instance = null;
     //массив с CALL_ID из битрикса, ключ - Uniqueid из asterisk
     public $calls = array();
+    //маппинг linkedid -> CALL_ID для быстрого доступа
+    public $callIdByLinkedid = array();
+    //Детали CRM объекта, возвращённого при регистрации звонка
+    public $callCrmData = array(); // [linkedid => ['entity_type'=>..., 'entity_id'=>..., 'created'=>bool]]
+    //Список внутренних номеров, у которых показана карточка для звонка
+    public $callShownCards = array(); // [linkedid => ['100'=>true]]
 	//массив с uniqueid внешних звонкнов
     public $uniqueids = array();
 	//массив FullFname (url'ы записей разговоров), ключ - Uniqueid из asterisk

@@ -329,7 +329,16 @@ $pamiClient->registerEventListener(
                 }
                 
                 $call_id = $callResult['CALL_ID'];
-                
+                $globalsObj->callIdByLinkedid[$callLinkedid] = $call_id;
+                $globalsObj->callCrmData[$callLinkedid] = array(
+                    'entity_type' => $callResult['CRM_ENTITY_TYPE'] ?? null,
+                    'entity_id' => $callResult['CRM_ENTITY_ID'] ?? null,
+                    'created' => !empty($callResult['CRM_CREATED_LEAD']) || !empty($callResult['CRM_CREATED_ENTITIES']),
+                    'initial_responsible_user_id' => $responsibleUserId ?: null,
+                    'current_responsible_user_id' => $responsibleUserId ?: null,
+                );
+                $globalsObj->callShownCards[$callLinkedid] = array();
+
                 $helper->writeToLog(array(
                     'fallbackIntNum' => $fallbackIntNum,
                     'selectedIntNum' => $intNum,
@@ -342,6 +351,9 @@ $pamiClient->registerEventListener(
                 // Показываем карточку ответственному
                 $result = $helper->showInputCall($intNum, $call_id);
                 $helper->writeToLog(var_export($result, true), "show input card to $intNum (responsible) from $exten");
+                if ($result) {
+                    $globalsObj->callShownCards[$callLinkedid][$intNum] = true;
+                }
                 echo "callid = ".$call_id." \n";
                 echo "responsible intNum = ".$intNum." \n";
                 
@@ -621,15 +633,63 @@ $pamiClient->registerEventListener(
         $helper->writeToLog("Dial Begin ");
         $helper->writeToLog($event->getRawContent());
         $callUniqueid = $event->getKey("Uniqueid");
+        $linkedid = $event->getKey("Linkedid");
+        $destUniqueId = $event->getKey("DestUniqueID");
         $exten = $event->getKey("DialString");
+
+        if (empty($linkedid) && isset($globalsObj->uniqueidToLinkedid[$callUniqueid])) {
+            $linkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid];
+        }
+        if (empty($linkedid) && $destUniqueId && isset($globalsObj->uniqueidToLinkedid[$destUniqueId])) {
+            $linkedid = $globalsObj->uniqueidToLinkedid[$destUniqueId];
+        }
+        if (empty($linkedid) && isset($globalsObj->calls[$callUniqueid])) {
+            $linkedid = $callUniqueid;
+        }
+        if (!empty($linkedid)) {
+            $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
+        } else {
+            $linkedid = $callUniqueid;
+            $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
+        }
+
+        $call_id = null;
+        if (!empty($linkedid) && isset($globalsObj->callIdByLinkedid[$linkedid])) {
+            $call_id = $globalsObj->callIdByLinkedid[$linkedid];
+        }
+        if (!$call_id && !empty($linkedid) && isset($globalsObj->calls[$linkedid])) {
+            $call_id = $globalsObj->calls[$linkedid];
+        }
+        if (!$call_id && isset($globalsObj->calls[$callUniqueid])) {
+            $call_id = $globalsObj->calls[$callUniqueid];
+        }
+        if (!$call_id || empty($exten)) {
+            return;
+        }
+
+        $globalsObj->calls[$callUniqueid] = $call_id;
+        if (!empty($linkedid)) {
+            $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+        }
+        $globalsObj->intNums[$callUniqueid] = $exten;
+        if (!empty($destUniqueId)) {
+            $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
+        }
+        if (!isset($globalsObj->callShownCards[$linkedid])) {
+            $globalsObj->callShownCards[$linkedid] = array();
+        }
 
         // Если user_show_cards пуст - показываем всем (Битрикс сам определит ответственного)
         // Если заполнен - фильтруем по списку внутренних номеров
-        if ($globalsObj->calls[$callUniqueid] !== 'undefined' 
-            && (empty($globalsObj->user_show_cards) || in_array($exten, $globalsObj->user_show_cards))) {
-            $result = $helper->showInputCall($exten, $globalsObj->calls[$callUniqueid]);
-            $helper->writeToLog(var_export($result, true), "show input card to $exten ");
-            $helper->writeToLog("show input call to ".$exten);
+        if (empty($globalsObj->user_show_cards) || in_array($exten, $globalsObj->user_show_cards)) {
+            if (empty($globalsObj->callShownCards[$linkedid][$exten])) {
+                $result = $helper->showInputCall($exten, $call_id);
+                $helper->writeToLog(var_export($result, true), "show input card to $exten ");
+                $helper->writeToLog("show input call to ".$exten);
+                if ($result) {
+                    $globalsObj->callShownCards[$linkedid][$exten] = true;
+                }
+            }
             echo "\n-------------------------------------------------------------------\n\r";
             echo "\n\r";
         }
@@ -714,33 +774,54 @@ $pamiClient->registerEventListener(
                     $extNum = $event->getCallerIDNum();
                 }
                 $helper->writeToLog($event->getRawContent()."\n\r");
+                $linkedid = $event->getKey("Linkedid") ?: ($globalsObj->uniqueidToLinkedid[$callLinkedid] ?? $callLinkedid);
+                $globalsObj->uniqueidToLinkedid[$callLinkedid] = $linkedid;
+                $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->calls[$linkedid] ?? ($globalsObj->calls[$callLinkedid] ?? null));
+                $currentIntNum = $globalsObj->intNums[$callLinkedid] ?? null;
+
                 switch ($event->getDialStatus()) {
                     case 'ANSWER': //кто-то отвечает на звонок
-                        $helper->writeToLog(array('intNum'=>$globalsObj->intNums[$callLinkedid],
+                        $helper->writeToLog(array('intNum'=>$currentIntNum,
                                                     'extNum'=>$extNum,
                                                     'callUniqueid'=>$callLinkedid,
-                                                    'CALL_ID'=>$globalsObj->calls[$callLinkedid]),
+                                                    'CALL_ID'=>$callId),
                                                 'incoming call ANSWER');
-                        
-                        
-                        //для всех, кроме отвечающего, скрываем карточку
-                        $helper->hideInputCallExcept($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
+
+                        if ($callId && $linkedid && isset($globalsObj->callShownCards[$linkedid])) {
+                            $shownIntNums = array_keys($globalsObj->callShownCards[$linkedid]);
+                            $helper->hideInputCallList($callId, $shownIntNums, $currentIntNum);
+                            $globalsObj->callShownCards[$linkedid] = array();
+                            if ($currentIntNum) {
+                                $globalsObj->callShownCards[$linkedid][$currentIntNum] = true;
+                            }
+                        }
+                        if ($linkedid && isset($globalsObj->callCrmData[$linkedid])) {
+                            $globalsObj->callCrmData[$linkedid]['answer_int_num'] = $currentIntNum;
+                        }
                         break;
                     case 'BUSY': //занято
-                        $helper->writeToLog(array('intNum'=>$globalsObj->intNums[$callLinkedid],
+                        $helper->writeToLog(array('intNum'=>$currentIntNum,
                                                     'callUniqueid'=>$callLinkedid,
-                                                    'CALL_ID'=>$globalsObj->calls[$callLinkedid]),
+                                                    'CALL_ID'=>$callId),
                                                 'incoming call BUSY');
-                        //скрываем карточку для юзера
-                        $helper->hideInputCall($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
+                        if ($callId && $currentIntNum) {
+                            $helper->hideInputCall($currentIntNum, $callId);
+                        }
+                        if ($linkedid && $currentIntNum) {
+                            unset($globalsObj->callShownCards[$linkedid][$currentIntNum]);
+                        }
                         break;
                     case 'CANCEL': //звонивший бросил трубку
-                        $helper->writeToLog(array('intNum'=>$globalsObj->intNums[$callLinkedid],
+                        $helper->writeToLog(array('intNum'=>$currentIntNum,
                                                     'callUniqueid'=>$callLinkedid,
-                                                    'CALL_ID'=>$globalsObj->calls[$callLinkedid]),
+                                                    'CALL_ID'=>$callId),
                                                 'incoming call CANCEL');
-                        //скрываем карточку для юзера
-                        $helper->hideInputCall($globalsObj->intNums[$callLinkedid], $globalsObj->calls[$callLinkedid]);
+                        if ($callId && $currentIntNum) {
+                            $helper->hideInputCall($currentIntNum, $callId);
+                        }
+                        if ($linkedid && $currentIntNum) {
+                            unset($globalsObj->callShownCards[$linkedid][$currentIntNum]);
+                        }
                         break;            
                     default:
                         break;
@@ -960,12 +1041,19 @@ $pamiClient->registerEventListener(
                     'Duration'=>$CallDuration,
                     'Disposition'=>$CallDisposition), true);
                 
+                $linkedid = $globalsObj->uniqueidToLinkedid[$callLinkedid] ?? $callLinkedid;
+
                 // НЕМЕДЛЕННО завершаем звонок в Битрикс (БЕЗ записи)
                 $statusCode = $helper->getStatusCodeFromDisposition($CallDisposition);
                 $finishResult = $helper->finishCall($call_id, $CallIntNum, $CallDuration, $statusCode);
                 $helper->writeToLog($finishResult, 'Call finished immediately (without record)');
                 echo "call finished immediately in B24, status: $statusCode\n";
                 
+                // Скрываем карточки у остальных участников
+                if ($linkedid && isset($globalsObj->callShownCards[$linkedid])) {
+                    $helper->hideInputCallList($call_id, array_keys($globalsObj->callShownCards[$linkedid]), $CallIntNum);
+                }
+
                 // СКРЫВАЕМ карточку звонка для пользователя
                 $hideResult = $helper->hideInputCall($CallIntNum, $call_id);
                 $helper->writeToLog(array(
@@ -974,6 +1062,35 @@ $pamiClient->registerEventListener(
                     'hideResult' => $hideResult
                 ), 'HangupEvent: Card hidden for user');
                 echo "card hidden for intNum: $CallIntNum\n";
+                if ($linkedid) {
+                    unset($globalsObj->callShownCards[$linkedid]);
+                }
+
+                $isAnswered = in_array(strtoupper($CallDisposition), array('ANSWER', 'ANSWERED'), true);
+                if ($isAnswered && $linkedid && !empty($globalsObj->callCrmData[$linkedid])) {
+                    $crmInfo = $globalsObj->callCrmData[$linkedid];
+                    $crmEntityType = $crmInfo['entity_type'] ?? null;
+                    $crmEntityId = $crmInfo['entity_id'] ?? null;
+                    $finalIntNum = $CallIntNum ?: ($crmInfo['answer_int_num'] ?? null);
+                    $finalUserId = $finalIntNum ? $helper->getUSER_IDByIntNum($finalIntNum) : null;
+                    if (!$finalUserId) {
+                        $finalUserId = $helper->getFallbackResponsibleUserId();
+                    }
+
+                    if ($crmEntityType && $crmEntityId && $finalUserId) {
+                        $updateResult = $helper->setCrmResponsible($crmEntityType, $crmEntityId, $finalUserId);
+                        $globalsObj->callCrmData[$linkedid]['current_responsible_user_id'] = $finalUserId;
+                        $globalsObj->callCrmData[$linkedid]['final_int_num'] = $finalIntNum;
+                        $globalsObj->callCrmData[$linkedid]['crm_responsible_update'] = $updateResult;
+                        $helper->writeToLog(array(
+                            'entityType' => $crmEntityType,
+                            'entityId' => $crmEntityId,
+                            'finalIntNum' => $finalIntNum,
+                            'finalUserId' => $finalUserId,
+                            'updateResult' => $updateResult,
+                        ), 'CRM responsible updated after call');
+                    }
+                }
                 
                 // Upload with async background process to avoid blocking main CallMeIn process
                 $uploadCmd = sprintf(
@@ -1009,6 +1126,12 @@ $pamiClient->registerEventListener(
                 $helper->removeItemFromArray($globalsObj->Dispositions,$callLinkedid,'key');
                 $helper->removeItemFromArray($globalsObj->calls,$callLinkedid,'key');
                 $helper->removeItemFromArray($globalsObj->Onhold,$event->getChannel(),'key');
+                if ($linkedid && isset($globalsObj->callIdByLinkedid[$linkedid])) {
+                    unset($globalsObj->callIdByLinkedid[$linkedid]);
+                }
+                if ($linkedid && isset($globalsObj->callCrmData[$linkedid])) {
+                    unset($globalsObj->callCrmData[$linkedid]);
+                }
                 
                 // Очищаем маппинг linkedid если он был создан для обычного звонка
                 if (isset($globalsObj->uniqueidToLinkedid[$callLinkedid])) {

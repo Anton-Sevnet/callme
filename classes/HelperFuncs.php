@@ -347,6 +347,7 @@ class HelperFuncs {
 	    if (strlen($callerid) == 7){
             $callerid = "8342".$callerid;
         }
+        $fallbackUserId = $this->getFallbackResponsibleUserId();
         $data = array(
             'USER_PHONE_INNER' => $exten,
             //'USER_ID' => $argv[1],
@@ -356,6 +357,9 @@ class HelperFuncs {
             'CRM_CREATE' => 1,
             'SHOW' => 1,
         );
+        if ($fallbackUserId !== null) {
+            $data['USER_ID'] = $fallbackUserId;
+        }
 	    if ($crm_source !== null) {
 	        $data['CRM_SOURCE'] = $crm_source;
         }
@@ -369,6 +373,79 @@ class HelperFuncs {
 	    }
     
 	}
+
+    /**
+     * Получить fallback USER_ID для назначения ответственного
+     *
+     * @return int|null
+     */
+    public function getFallbackResponsibleUserId(){
+        $value = $this->getConfig('fallback_responsible_user_id');
+        if (is_numeric($value)) {
+            $value = (int)$value;
+            return $value > 0 ? $value : null;
+        }
+        return null;
+    }
+
+    /**
+     * Массово скрыть карточки звонка у списка внутренних номеров
+     *
+     * @param string $call_id
+     * @param array $intNums
+     * @param string|null $excludeIntNum
+     * @return array<int|string,mixed>
+     */
+    public function hideInputCallList($call_id, array $intNums, $excludeIntNum = null){
+        $results = array();
+        foreach ($intNums as $intNum) {
+            $intNum = (string)$intNum;
+            if ($intNum === '') {
+                continue;
+            }
+            if ($excludeIntNum !== null && (string)$excludeIntNum === $intNum) {
+                continue;
+            }
+            $results[$intNum] = $this->hideInputCall($intNum, $call_id);
+        }
+        return $results;
+    }
+
+    /**
+     * Обновить ответственного для CRM сущности
+     *
+     * @param string $entityType
+     * @param int $entityId
+     * @param int $userId
+     * @return array|false
+     */
+    public function setCrmResponsible($entityType, $entityId, $userId){
+        if (empty($entityType) || empty($entityId) || empty($userId)) {
+            return false;
+        }
+
+        $entityType = strtoupper($entityType);
+        $methodMap = array(
+            'LEAD' => 'crm.lead.update',
+            'CONTACT' => 'crm.contact.update',
+            'COMPANY' => 'crm.company.update',
+            'DEAL' => 'crm.deal.update',
+        );
+
+        if (!isset($methodMap[$entityType])) {
+            $this->writeToLog("Unknown CRM entity type for responsible update: {$entityType}", 'setCrmResponsible');
+            return false;
+        }
+
+        $payload = array(
+            'ID' => (int)$entityId,
+            'FIELDS' => array(
+                'ASSIGNED_BY_ID' => (int)$userId,
+            ),
+        );
+
+        return $this->getBitrixApi($payload, $methodMap[$entityType]);
+    }
 
     /**
      * Run Bitrix24 REST API method telephony.externalcall.register.json

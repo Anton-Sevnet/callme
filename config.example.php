@@ -73,6 +73,7 @@ return array(
         '104',
         '105',
     ),
+    'fallback_responsible_user_id' => 1,
     
     // Event listener timeout (microseconds)
     'listener_timeout' => 50000,  // 0.05 second
