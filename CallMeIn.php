@@ -279,35 +279,34 @@ $pamiClient->registerEventListener(
                 // выставим CallerID 
                 $callami->SetVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel);
                 
-                // Получаем внутренний номер из маппинга как fallback
+                // Получаем внутренние номера для fallback и ответственного
                 $bx24 = $helper->getConfig('bx24');
-                // Проверка совместимости с PHP 8.2: array_key_exists требует массив
                 if (!is_array($bx24)) {
                     $bx24 = array('default_user_number' => '100');
                 }
                 $fallbackIntNum = array_key_exists($exten, $bx24) ? $bx24[$exten] : $bx24["default_user_number"];
-                
-                // Определяем внутренний номер ДО регистрации звонка
-                $intNum = $fallbackIntNum; // По умолчанию используем fallback
-                
-                // Если нашли ответственного в CRM - получаем его внутренний номер
+                $fallbackUserId = $helper->getFallbackResponsibleUserId();
+
+                $selectedIntNum = null;
+                $selectedUserId = null;
                 if ($responsibleUserId) {
                     $responsibleIntNum = $helper->getIntNumByUSER_ID($responsibleUserId);
                     if ($responsibleIntNum) {
-                        $intNum = $responsibleIntNum;
+                        $selectedIntNum = $responsibleIntNum;
+                        $selectedUserId = $responsibleUserId;
                         $helper->writeToLog(array(
                             'responsibleUserId' => $responsibleUserId,
                             'responsibleIntNum' => $responsibleIntNum
                         ), 'Found responsible internal number from CRM');
                     } else {
-                        $helper->writeToLog("Responsible user $responsibleUserId has no internal number, using fallback: $fallbackIntNum", 
+                        $helper->writeToLog("Responsible user $responsibleUserId has no internal number, will register later.", 
                             'Responsible determination');
                     }
                 } else {
-                    $helper->writeToLog("No responsible found in CRM, using fallback: $fallbackIntNum", 
+                    $helper->writeToLog("No responsible found in CRM, will wait for agent registration.", 
                         'Responsible determination');
                 }
-                
+
                 $bx24_source = $helper->getConfig('bx24_crm_source');
                 // Проверка совместимости с PHP 8.2: array_key_exists требует массив
                 if (!is_array($bx24_source)) {
@@ -319,46 +318,70 @@ $pamiClient->registerEventListener(
                 if ($roiSource !== null) {
                     $srmSource = $roiSource;
                 }
-                
-                // Регистрируем звонок в Битрикс24 с ПРАВИЛЬНЫМ внутренним номером
-                $callResult = $helper->runInputCall($intNum, $extNum, $exten, $srmSource);
-                
-                if (!$callResult) {
-                    echo "Failed to register call in Bitrix24\n";
-                    return "";
-                }
-                
-                $call_id = $callResult['CALL_ID'];
-                $globalsObj->callIdByLinkedid[$callLinkedid] = $call_id;
-                $globalsObj->callCrmData[$callLinkedid] = array(
-                    'entity_type' => $callResult['CRM_ENTITY_TYPE'] ?? null,
-                    'entity_id' => $callResult['CRM_ENTITY_ID'] ?? null,
-                    'created' => !empty($callResult['CRM_CREATED_LEAD']) || !empty($callResult['CRM_CREATED_ENTITIES']),
-                    'initial_responsible_user_id' => $responsibleUserId ?: null,
-                    'current_responsible_user_id' => $responsibleUserId ?: null,
-                );
-                $globalsObj->callShownCards[$callLinkedid] = array();
 
-                $helper->writeToLog(array(
-                    'fallbackIntNum' => $fallbackIntNum,
-                    'selectedIntNum' => $intNum,
-                    'responsibleUserId' => $responsibleUserId ?? 'none',
-                    'CRM_ENTITY_TYPE' => $callResult['CRM_ENTITY_TYPE'] ?? 'none',
-                    'CRM_ENTITY_ID' => $callResult['CRM_ENTITY_ID'] ?? 'none',
-                    'CALL_ID' => $call_id
-                ), 'Call registered with responsible');
-                
-                // Показываем карточку ответственному
-                $result = $helper->showInputCall($intNum, $call_id);
-                $helper->writeToLog(var_export($result, true), "show input card to $intNum (responsible) from $exten");
-                if ($result) {
-                    $globalsObj->callShownCards[$callLinkedid][$intNum] = true;
+                $globalsObj->callShownCards[$callLinkedid] = array();
+                $globalsObj->ringingIntNums[$callLinkedid] = array();
+
+                if ($selectedIntNum !== null && $selectedUserId !== null) {
+                    // Регистрируем звонок сразу на ответственного
+                    $callResult = $helper->runInputCall($selectedIntNum, $extNum, $exten, $srmSource, $selectedUserId);
+                    if (!$callResult) {
+                        echo "Failed to register call in Bitrix24\n";
+                        return "";
+                    }
+
+                    $call_id = $callResult['CALL_ID'];
+                    $globalsObj->callIdByLinkedid[$callLinkedid] = $call_id;
+                    $globalsObj->callCrmData[$callLinkedid] = array(
+                        'entity_type' => $callResult['CRM_ENTITY_TYPE'] ?? null,
+                        'entity_id' => $callResult['CRM_ENTITY_ID'] ?? null,
+                        'created' => !empty($callResult['CRM_CREATED_LEAD']) || !empty($callResult['CRM_CREATED_ENTITIES']),
+                        'initial_responsible_user_id' => $selectedUserId,
+                        'current_responsible_user_id' => $selectedUserId,
+                    );
+
+                    $helper->writeToLog(array(
+                        'fallbackIntNum' => $fallbackIntNum,
+                        'selectedIntNum' => $selectedIntNum,
+                        'responsibleUserId' => $selectedUserId,
+                        'CRM_ENTITY_TYPE' => $callResult['CRM_ENTITY_TYPE'] ?? 'none',
+                        'CRM_ENTITY_ID' => $callResult['CRM_ENTITY_ID'] ?? 'none',
+                        'CALL_ID' => $call_id
+                    ), 'Call registered with responsible');
+
+                    $result = $helper->showInputCall($selectedIntNum, $call_id);
+                    $helper->writeToLog(var_export($result, true), "show input card to $selectedIntNum (responsible) from $exten");
+                    if ($result) {
+                        $globalsObj->callShownCards[$callLinkedid][$selectedIntNum] = true;
+                    }
+
+                    $globalsObj->calls[$callLinkedid] = $call_id;
+                    $globalsObj->intNums[$callLinkedid] = $selectedIntNum;
+                } else {
+                    // Отложим регистрацию до появления первого агента
+                    $globalsObj->pendingCalls[$callLinkedid] = array(
+                        'extNum' => $extNum,
+                        'line' => $exten,
+                        'crm_source' => $srmSource,
+                        'fallbackIntNum' => $fallbackIntNum,
+                        'fallbackUserId' => $fallbackUserId,
+                        'registered' => false,
+                        'fallback_used' => false,
+                    );
+                    $globalsObj->callCrmData[$callLinkedid] = array(
+                        'entity_type' => $crmData['entity_type'] ?? null,
+                        'entity_id' => $crmData['entity_id'] ?? null,
+                        'created' => false,
+                        'initial_responsible_user_id' => null,
+                        'current_responsible_user_id' => null,
+                    );
+                    $helper->writeToLog(array(
+                        'fallbackIntNum' => $fallbackIntNum,
+                        'fallbackUserId' => $fallbackUserId,
+                    ), 'Call registration deferred until agent detected');
+                    $globalsObj->intNums[$callLinkedid] = $fallbackIntNum;
                 }
-                echo "callid = ".$call_id." \n";
-                echo "responsible intNum = ".$intNum." \n";
-                
-                $globalsObj->calls[$callLinkedid] = $call_id;
-                $globalsObj->intNums[$callLinkedid] = $intNum;
+
                 $globalsObj->Durations[$callLinkedid] = 0;
                 $globalsObj->Dispositions[$callLinkedid] = "NO ANSWER";
                 echo "\n-------------------------------------------------------------------\n\r";
@@ -637,51 +660,119 @@ $pamiClient->registerEventListener(
         $destUniqueId = $event->getKey("DestUniqueID");
         $exten = $event->getKey("DialString");
 
+        if (empty($exten)) {
+            return;
+        }
+
         if (empty($linkedid) && isset($globalsObj->uniqueidToLinkedid[$callUniqueid])) {
             $linkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid];
         }
         if (empty($linkedid) && $destUniqueId && isset($globalsObj->uniqueidToLinkedid[$destUniqueId])) {
             $linkedid = $globalsObj->uniqueidToLinkedid[$destUniqueId];
         }
-        if (empty($linkedid) && isset($globalsObj->calls[$callUniqueid])) {
+        if (empty($linkedid)) {
             $linkedid = $callUniqueid;
         }
-        if (!empty($linkedid)) {
-            $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
-        } else {
-            $linkedid = $callUniqueid;
-            $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
-        }
-
-        $call_id = null;
-        if (!empty($linkedid) && isset($globalsObj->callIdByLinkedid[$linkedid])) {
-            $call_id = $globalsObj->callIdByLinkedid[$linkedid];
-        }
-        if (!$call_id && !empty($linkedid) && isset($globalsObj->calls[$linkedid])) {
-            $call_id = $globalsObj->calls[$linkedid];
-        }
-        if (!$call_id && isset($globalsObj->calls[$callUniqueid])) {
-            $call_id = $globalsObj->calls[$callUniqueid];
-        }
-        if (!$call_id || empty($exten)) {
-            return;
-        }
-
-        $globalsObj->calls[$callUniqueid] = $call_id;
-        if (!empty($linkedid)) {
-            $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
-        }
-        $globalsObj->intNums[$callUniqueid] = $exten;
+        $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
         if (!empty($destUniqueId)) {
             $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
         }
+
+        if (!isset($globalsObj->ringingIntNums[$linkedid])) {
+            $globalsObj->ringingIntNums[$linkedid] = array();
+        }
+
+        $userId = $helper->getUSER_IDByIntNum($exten);
+        $globalsObj->ringingIntNums[$linkedid][$exten] = array(
+            'user_id' => $userId,
+            'timestamp' => time(),
+        );
+
+        $call_id = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
+
+        if (!$call_id && isset($globalsObj->pendingCalls[$linkedid])) {
+            $pending = &$globalsObj->pendingCalls[$linkedid];
+            if ($userId) {
+                $callResult = $helper->runInputCall($exten, $pending['extNum'], $pending['line'], $pending['crm_source'], $userId);
+                if ($callResult) {
+                    $call_id = $callResult['CALL_ID'];
+                    $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+                    $globalsObj->callCrmData[$linkedid] = array(
+                        'entity_type' => $callResult['CRM_ENTITY_TYPE'] ?? null,
+                        'entity_id' => $callResult['CRM_ENTITY_ID'] ?? null,
+                        'created' => !empty($callResult['CRM_CREATED_LEAD']) || !empty($callResult['CRM_CREATED_ENTITIES']),
+                        'initial_responsible_user_id' => $userId,
+                        'current_responsible_user_id' => $userId,
+                    );
+                    $pending['registered'] = true;
+                    unset($globalsObj->pendingCalls[$linkedid]);
+                    $globalsObj->intNums[$linkedid] = $exten;
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'intNum' => $exten,
+                        'userId' => $userId,
+                        'CALL_ID' => $call_id,
+                    ), 'Deferred call registered on agent');
+                } else {
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'intNum' => $exten,
+                        'userId' => $userId,
+                    ), 'Deferred call registration failed on agent');
+                }
+            } elseif (!$pending['fallback_used'] && !empty($pending['fallbackIntNum']) && !empty($pending['fallbackUserId'])) {
+                $callResult = $helper->runInputCall($pending['fallbackIntNum'], $pending['extNum'], $pending['line'], $pending['crm_source'], $pending['fallbackUserId']);
+                $pending['fallback_used'] = true;
+                if ($callResult) {
+                    $call_id = $callResult['CALL_ID'];
+                    $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+                    $globalsObj->callCrmData[$linkedid] = array(
+                        'entity_type' => $callResult['CRM_ENTITY_TYPE'] ?? null,
+                        'entity_id' => $callResult['CRM_ENTITY_ID'] ?? null,
+                        'created' => !empty($callResult['CRM_CREATED_LEAD']) || !empty($callResult['CRM_CREATED_ENTITIES']),
+                        'initial_responsible_user_id' => $pending['fallbackUserId'],
+                        'current_responsible_user_id' => $pending['fallbackUserId'],
+                    );
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'fallbackIntNum' => $pending['fallbackIntNum'],
+                        'fallbackUserId' => $pending['fallbackUserId'],
+                        'CALL_ID' => $call_id,
+                    ), 'Deferred call registered on fallback user');
+                    $globalsObj->intNums[$linkedid] = $pending['fallbackIntNum'];
+                    unset($globalsObj->pendingCalls[$linkedid]);
+                } else {
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'fallbackIntNum' => $pending['fallbackIntNum'],
+                        'fallbackUserId' => $pending['fallbackUserId'],
+                    ), 'Deferred call registration on fallback failed');
+                }
+            }
+            unset($pending);
+        }
+
+        if ($call_id) {
+            $globalsObj->calls[$callUniqueid] = $call_id;
+            $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+            if ($linkedid !== $callUniqueid) {
+                $globalsObj->calls[$linkedid] = $call_id;
+            }
+        }
+        $globalsObj->intNums[$callUniqueid] = $exten;
+        if ($linkedid && !isset($globalsObj->intNums[$linkedid])) {
+            $globalsObj->intNums[$linkedid] = $exten;
+        }
+
+        if (!$call_id) {
+            return;
+        }
+
         if (!isset($globalsObj->callShownCards[$linkedid])) {
             $globalsObj->callShownCards[$linkedid] = array();
         }
 
-        // Если user_show_cards пуст - показываем всем (Битрикс сам определит ответственного)
-        // Если заполнен - фильтруем по списку внутренних номеров
-        if (empty($globalsObj->user_show_cards) || in_array($exten, $globalsObj->user_show_cards)) {
+        if ($userId && (empty($globalsObj->user_show_cards) || in_array($exten, $globalsObj->user_show_cards))) {
             if (empty($globalsObj->callShownCards[$linkedid][$exten])) {
                 $result = $helper->showInputCall($exten, $call_id);
                 $helper->writeToLog(var_export($result, true), "show input card to $exten ");
@@ -787,16 +878,28 @@ $pamiClient->registerEventListener(
                                                     'CALL_ID'=>$callId),
                                                 'incoming call ANSWER');
 
-                        if ($callId && $linkedid && isset($globalsObj->callShownCards[$linkedid])) {
+                        if ($linkedid && isset($globalsObj->callShownCards[$linkedid]) && !empty($globalsObj->callShownCards[$linkedid])) {
                             $shownIntNums = array_keys($globalsObj->callShownCards[$linkedid]);
-                            $helper->hideInputCallList($callId, $shownIntNums, $currentIntNum);
+                            if ($callId) {
+                                $helper->hideInputCallList($callId, $shownIntNums, $currentIntNum);
+                            }
                             $globalsObj->callShownCards[$linkedid] = array();
                             if ($currentIntNum) {
                                 $globalsObj->callShownCards[$linkedid][$currentIntNum] = true;
                             }
+                            if (isset($globalsObj->ringingIntNums[$linkedid])) {
+                                foreach ($shownIntNums as $shownIntNum) {
+                                    if ($shownIntNum !== $currentIntNum && isset($globalsObj->ringingIntNums[$linkedid][$shownIntNum])) {
+                                        unset($globalsObj->ringingIntNums[$linkedid][$shownIntNum]);
+                                    }
+                                }
+                            }
                         }
                         if ($linkedid && isset($globalsObj->callCrmData[$linkedid])) {
                             $globalsObj->callCrmData[$linkedid]['answer_int_num'] = $currentIntNum;
+                        }
+                        if ($linkedid && $currentIntNum && isset($globalsObj->ringingIntNums[$linkedid][$currentIntNum])) {
+                            unset($globalsObj->ringingIntNums[$linkedid][$currentIntNum]);
                         }
                         break;
                     case 'BUSY': //занято
@@ -804,11 +907,12 @@ $pamiClient->registerEventListener(
                                                     'callUniqueid'=>$callLinkedid,
                                                     'CALL_ID'=>$callId),
                                                 'incoming call BUSY');
-                        if ($callId && $currentIntNum) {
+                        if ($callId && $currentIntNum && !empty($globalsObj->callShownCards[$linkedid][$currentIntNum])) {
                             $helper->hideInputCall($currentIntNum, $callId);
                         }
                         if ($linkedid && $currentIntNum) {
                             unset($globalsObj->callShownCards[$linkedid][$currentIntNum]);
+                            unset($globalsObj->ringingIntNums[$linkedid][$currentIntNum]);
                         }
                         break;
                     case 'CANCEL': //звонивший бросил трубку
@@ -816,11 +920,12 @@ $pamiClient->registerEventListener(
                                                     'callUniqueid'=>$callLinkedid,
                                                     'CALL_ID'=>$callId),
                                                 'incoming call CANCEL');
-                        if ($callId && $currentIntNum) {
+                        if ($callId && $currentIntNum && !empty($globalsObj->callShownCards[$linkedid][$currentIntNum])) {
                             $helper->hideInputCall($currentIntNum, $callId);
                         }
                         if ($linkedid && $currentIntNum) {
                             unset($globalsObj->callShownCards[$linkedid][$currentIntNum]);
+                            unset($globalsObj->ringingIntNums[$linkedid][$currentIntNum]);
                         }
                         break;            
                     default:
@@ -996,11 +1101,15 @@ $pamiClient->registerEventListener(
 //                $CallDuration = $CallDuration ? $CallDuration : 1;
 
                 $CallDisposition = $globalsObj->Dispositions[$callLinkedid];
-                $call_id = $globalsObj->calls[$callLinkedid] ?? null;
+                $linkedid = $globalsObj->uniqueidToLinkedid[$callLinkedid] ?? $callLinkedid;
+                $call_id = $globalsObj->calls[$callLinkedid] ?? ($globalsObj->callIdByLinkedid[$linkedid] ?? null);
                 
                 // FALLBACK: Если не нашли call_id - пропускаем обработку
                 if (empty($call_id)) {
                     $helper->writeToLog("No call_id for Uniqueid $callLinkedid, skipping HangupEvent", 'HangupEvent FALLBACK');
+                    unset($globalsObj->pendingCalls[$linkedid]);
+                    unset($globalsObj->ringingIntNums[$linkedid]);
+                    unset($globalsObj->callShownCards[$linkedid]);
                     return;
                 }
                 
@@ -1041,8 +1150,6 @@ $pamiClient->registerEventListener(
                     'Duration'=>$CallDuration,
                     'Disposition'=>$CallDisposition), true);
                 
-                $linkedid = $globalsObj->uniqueidToLinkedid[$callLinkedid] ?? $callLinkedid;
-
                 // НЕМЕДЛЕННО завершаем звонок в Битрикс (БЕЗ записи)
                 $statusCode = $helper->getStatusCodeFromDisposition($CallDisposition);
                 $finishResult = $helper->finishCall($call_id, $CallIntNum, $CallDuration, $statusCode);
@@ -1050,20 +1157,25 @@ $pamiClient->registerEventListener(
                 echo "call finished immediately in B24, status: $statusCode\n";
                 
                 // Скрываем карточки у остальных участников
+                $finalCardShown = false;
                 if ($linkedid && isset($globalsObj->callShownCards[$linkedid])) {
+                    $finalCardShown = $CallIntNum && !empty($globalsObj->callShownCards[$linkedid][$CallIntNum]);
                     $helper->hideInputCallList($call_id, array_keys($globalsObj->callShownCards[$linkedid]), $CallIntNum);
                 }
 
-                // СКРЫВАЕМ карточку звонка для пользователя
-                $hideResult = $helper->hideInputCall($CallIntNum, $call_id);
-                $helper->writeToLog(array(
-                    'intNum' => $CallIntNum,
-                    'call_id' => $call_id,
-                    'hideResult' => $hideResult
-                ), 'HangupEvent: Card hidden for user');
-                echo "card hidden for intNum: $CallIntNum\n";
+                if ($finalCardShown && $CallIntNum) {
+                    $hideResult = $helper->hideInputCall($CallIntNum, $call_id);
+                    $helper->writeToLog(array(
+                        'intNum' => $CallIntNum,
+                        'call_id' => $call_id,
+                        'hideResult' => $hideResult
+                    ), 'HangupEvent: Card hidden for user');
+                    echo "card hidden for intNum: $CallIntNum\n";
+                }
                 if ($linkedid) {
                     unset($globalsObj->callShownCards[$linkedid]);
+                    unset($globalsObj->ringingIntNums[$linkedid]);
+                    unset($globalsObj->pendingCalls[$linkedid]);
                 }
 
                 $isAnswered = in_array(strtoupper($CallDisposition), array('ANSWER', 'ANSWERED'), true);

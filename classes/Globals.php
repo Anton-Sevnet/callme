@@ -18,6 +18,10 @@ class Globals {
     public $callCrmData = array(); // [linkedid => ['entity_type'=>..., 'entity_id'=>..., 'created'=>bool]]
     //Список внутренних номеров, у которых показана карточка для звонка
     public $callShownCards = array(); // [linkedid => ['100'=>true]]
+    //Список внутренних номеров, где в данный момент звонит телефон
+    public $ringingIntNums = array(); // [linkedid => ['100' => ['user_id'=>123]]]
+    //Отложенные регистрации (когда нет ответственного)
+    public $pendingCalls = array(); // [linkedid => [...]]
 	//массив с uniqueid внешних звонкнов
     public $uniqueids = array();
 	//массив FullFname (url'ы записей разговоров), ключ - Uniqueid из asterisk

@@ -340,14 +340,13 @@ class HelperFuncs {
 	 *	)
 	 * We need CALL_ID and CRM data
 	 */
-	public function runInputCall($exten, $callerid, $line, $crm_source=null){
+	public function runInputCall($exten, $callerid, $line, $crm_source=null, $userId = null){
 	    if (substr($callerid,0,1) == "9" and !(strlen($callerid) == 10)){
             $callerid = substr($callerid, 1);
         }
 	    if (strlen($callerid) == 7){
             $callerid = "8342".$callerid;
         }
-        $fallbackUserId = $this->getFallbackResponsibleUserId();
         $data = array(
             'USER_PHONE_INNER' => $exten,
             //'USER_ID' => $argv[1],
@@ -357,8 +356,13 @@ class HelperFuncs {
             'CRM_CREATE' => 1,
             'SHOW' => 1,
         );
-        if ($fallbackUserId !== null) {
-            $data['USER_ID'] = $fallbackUserId;
+        if ($userId !== null) {
+            $data['USER_ID'] = (int)$userId;
+        } else {
+            $fallbackUserId = $this->getFallbackResponsibleUserId();
+            if ($fallbackUserId !== null) {
+                $data['USER_ID'] = $fallbackUserId;
+            }
         }
 	    if ($crm_source !== null) {
 	        $data['CRM_SOURCE'] = $crm_source;
