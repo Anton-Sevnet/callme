@@ -653,15 +653,19 @@ $pamiClient->registerEventListener(
 
     },function (EventMessage $event) use ($globalsObj){
 
-    $callerLen = strlen(preg_replace('/\D+/', '', (string)$event->getCallerIdNum()));
+    if (!($event instanceof NewchannelEvent)) {
+        return false;
+    }
+
+    $callerIdNum = (string)$event->getCallerIdNum();
+    $callerLen = strlen(preg_replace('/\D+/', '', $callerIdNum));
     $channel = $event->getKey('Channel') ?? '';
     return
-        ($event instanceof NewchannelEvent)
-        && ($event->getExtension() !== 's')
+        ($event->getExtension() !== 's')
 //            && ($event->getContext() === 'E1' || $event->getContext() == 'office')
             // Если user_show_cards пуст - показываем всем (Битрикс сам определит ответственного)
             // Если заполнен - фильтруем по списку внутренних номеров
-            && (empty($globalsObj->user_show_cards) || in_array($event->getCallerIdNum(), $globalsObj->user_show_cards))
+            && (empty($globalsObj->user_show_cards) || in_array($callerIdNum, $globalsObj->user_show_cards))
             && ($callerLen <= 4)
             && (strpos($channel, 'Local/') !== 0)
             ;
