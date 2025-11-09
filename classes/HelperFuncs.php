@@ -807,6 +807,7 @@ class HelperFuncs {
 			$result = $this->getBitrixApi(array(
 						'CALL_ID' => $call_id,
 						'USER_ID' => $user_id,
+                        'USER_PHONE_INNER' => (string)$intNum,
 						), 'telephony.externalcall.show');
 			return $result;
 		} else 

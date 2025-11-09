@@ -290,9 +290,7 @@ function callme_show_cards_for_ringing($linkedid, $helper, $globalsObj)
         return;
     }
 
-    $userIds = array();
-    $intNumsShown = array();
-    foreach ($globalsObj->ringingIntNums[$linkedid] as $intNum => &$ringData) {
+    foreach ($globalsObj->ringingIntNums[$linkedid] as $intNum => $ringData) {
         $state = $ringData['state'] ?? 'RING';
         if ($state !== 'RING') {
             continue;
@@ -300,38 +298,7 @@ function callme_show_cards_for_ringing($linkedid, $helper, $globalsObj)
         if (!empty($globalsObj->callShownCards[$linkedid][$intNum])) {
             continue;
         }
-        $userId = $ringData['user_id'] ?? $helper->getUSER_IDByIntNum($intNum);
-        if (!$userId) {
-            continue;
-        }
-        $ringData['user_id'] = $userId;
-        $userIds[] = $userId;
-        $intNumsShown[$intNum] = $userId;
-    }
-    unset($ringData);
-
-    if (empty($userIds)) {
-        return;
-    }
-
-    $result = $helper->showInputCallForUsers($call_id, $userIds);
-    $helper->writeToLog(array(
-        'linkedid' => $linkedid,
-        'call_id' => $call_id,
-        'userIds' => $userIds,
-        'result' => $result,
-    ), 'show input call bulk');
-
-    if (!empty($result)) {
-        foreach ($intNumsShown as $intNum => $userId) {
-            if (!isset($globalsObj->callShownCards[$linkedid])) {
-                $globalsObj->callShownCards[$linkedid] = array();
-            }
-            $globalsObj->callShownCards[$linkedid][$intNum] = true;
-            if (isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
-                $globalsObj->ringingIntNums[$linkedid][$intNum]['shown'] = true;
-            }
-        }
+        callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj);
     }
 }
 
