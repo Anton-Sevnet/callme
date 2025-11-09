@@ -387,9 +387,246 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
             $globalsObj->ringingIntNums[$linkedid][$intNum] = array();
         }
         $globalsObj->ringingIntNums[$linkedid][$intNum]['user_id'] = $userId;
+        $globalsObj->ringingIntNums[$linkedid][$intNum]['state'] = $globalsObj->ringingIntNums[$linkedid][$intNum]['state'] ?? 'RING';
         $globalsObj->ringingIntNums[$linkedid][$intNum]['shown'] = true;
         $globalsObj->ringingIntNums[$linkedid][$intNum]['timestamp'] = time();
     }
+}
+
+/**
+ * Обработка пользовательского события начала дозвона по внутреннему номеру.
+ *
+ * @param EventMessage $event
+ * @param HelperFuncs $helper
+ * @param Globals $globalsObj
+ * @return void
+ */
+function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs $helper, Globals $globalsObj)
+{
+    $linkedid = (string) ($event->getKey('Linkedid') ?? $event->getKey('LinkedID') ?? '');
+    $linkedid = trim($linkedid);
+    if ($linkedid === '') {
+        return;
+    }
+
+    $intNum = trim((string) ($event->getKey('Target') ?? ''));
+    if ($intNum === '') {
+        return;
+    }
+
+    $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
+    $direction = (string) ($event->getKey('Direction') ?? 'inbound');
+
+    if (!isset($globalsObj->ringingIntNums[$linkedid])) {
+        $globalsObj->ringingIntNums[$linkedid] = array();
+    }
+
+    $ringEntry = $globalsObj->ringingIntNums[$linkedid][$intNum] ?? array();
+    if (empty($ringEntry['user_id'])) {
+        $ringEntry['user_id'] = $helper->getUSER_IDByIntNum($intNum);
+    }
+    $ringEntry['agent_uniqueid'] = $agentUniqueId ?: ($ringEntry['agent_uniqueid'] ?? null);
+    $ringEntry['direction'] = $direction ?: ($ringEntry['direction'] ?? 'inbound');
+    $ringEntry['state'] = 'RING';
+    $ringEntry['timestamp'] = time();
+    $ringEntry['shown'] = !empty($globalsObj->callShownCards[$linkedid][$intNum]);
+
+    $globalsObj->ringingIntNums[$linkedid][$intNum] = $ringEntry;
+
+    if (!isset($globalsObj->ringOrder[$linkedid])) {
+        $globalsObj->ringOrder[$linkedid] = array();
+    }
+    if (!in_array($intNum, $globalsObj->ringOrder[$linkedid], true)) {
+        $globalsObj->ringOrder[$linkedid][] = $intNum;
+    }
+
+    if ($agentUniqueId !== '') {
+        $globalsObj->uniqueidToLinkedid[$agentUniqueId] = $linkedid;
+        $globalsObj->intNums[$agentUniqueId] = $intNum;
+    }
+
+    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
+    if ($callId) {
+        $globalsObj->callIdByInt[$intNum] = $callId;
+    }
+
+    $helper->writeToLog(array(
+        'event' => 'CallMeRingingStart',
+        'linkedid' => $linkedid,
+        'intNum' => $intNum,
+        'agentUniqueid' => $agentUniqueId,
+        'direction' => $direction,
+        'call_id' => $callId,
+        'ringOrder' => $globalsObj->ringOrder[$linkedid],
+        'alreadyShown' => $ringEntry['shown'],
+    ), 'UserEvent CallMeRingingStart');
+
+    callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
+}
+
+/**
+ * Обработка пользовательского события об ответе внутреннего номера.
+ *
+ * @param EventMessage $event
+ * @param HelperFuncs $helper
+ * @param Globals $globalsObj
+ * @return void
+ */
+function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFuncs $helper, Globals $globalsObj)
+{
+    $linkedid = (string) ($event->getKey('Linkedid') ?? $event->getKey('LinkedID') ?? '');
+    $linkedid = trim($linkedid);
+    if ($linkedid === '') {
+        return;
+    }
+
+    $intNum = trim((string) ($event->getKey('Target') ?? ''));
+    if ($intNum === '') {
+        return;
+    }
+
+    $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
+    $direction = (string) ($event->getKey('Direction') ?? 'inbound');
+
+    if (!isset($globalsObj->ringingIntNums[$linkedid])) {
+        $globalsObj->ringingIntNums[$linkedid] = array();
+    }
+    if (!isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
+        $globalsObj->ringingIntNums[$linkedid][$intNum] = array(
+            'shown' => !empty($globalsObj->callShownCards[$linkedid][$intNum]),
+        );
+    }
+
+    $entry =& $globalsObj->ringingIntNums[$linkedid][$intNum];
+    if (empty($entry['user_id'])) {
+        $entry['user_id'] = $helper->getUSER_IDByIntNum($intNum);
+    }
+    $entry['agent_uniqueid'] = $agentUniqueId ?: ($entry['agent_uniqueid'] ?? null);
+    $entry['direction'] = $direction ?: ($entry['direction'] ?? 'inbound');
+    $entry['state'] = 'ANSWER';
+    $entry['timestamp'] = time();
+    $entry['answered'] = true;
+
+    if ($agentUniqueId !== '') {
+        $globalsObj->uniqueidToLinkedid[$agentUniqueId] = $linkedid;
+        $globalsObj->intNums[$agentUniqueId] = $intNum;
+    }
+
+    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
+    if ($callId) {
+        $globalsObj->callIdByInt[$intNum] = $callId;
+    }
+
+    $helper->writeToLog(array(
+        'event' => 'CallMeRingingAnswer',
+        'linkedid' => $linkedid,
+        'intNum' => $intNum,
+        'agentUniqueid' => $agentUniqueId,
+        'direction' => $direction,
+        'call_id' => $callId,
+    ), 'UserEvent CallMeRingingAnswer');
+
+    if ($callId) {
+        foreach ($globalsObj->callShownCards[$linkedid] ?? array() as $otherInt => $isShown) {
+            if ($otherInt === $intNum || !$isShown) {
+                continue;
+            }
+            $helper->hideInputCall($otherInt, $callId);
+            unset($globalsObj->callShownCards[$linkedid][$otherInt]);
+        }
+        if (!isset($globalsObj->callShownCards[$linkedid])) {
+            $globalsObj->callShownCards[$linkedid] = array();
+        }
+        $globalsObj->callShownCards[$linkedid][$intNum] = true;
+    }
+
+    if (isset($globalsObj->ringingIntNums[$linkedid])) {
+        foreach (array_keys($globalsObj->ringingIntNums[$linkedid]) as $otherInt) {
+            if ($otherInt !== $intNum) {
+                unset($globalsObj->ringingIntNums[$linkedid][$otherInt]);
+            }
+        }
+    }
+    if (isset($globalsObj->ringOrder[$linkedid])) {
+        $globalsObj->ringOrder[$linkedid] = array_values(array_filter(
+            $globalsObj->ringOrder[$linkedid],
+            function ($value) use ($intNum) {
+                return (string) $value === $intNum;
+            }
+        ));
+        if (empty($globalsObj->ringOrder[$linkedid])) {
+            unset($globalsObj->ringOrder[$linkedid]);
+        }
+    }
+}
+
+/**
+ * Обработка пользовательского события завершения дозвона для внутреннего номера.
+ *
+ * @param EventMessage $event
+ * @param HelperFuncs $helper
+ * @param Globals $globalsObj
+ * @return void
+ */
+function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs $helper, Globals $globalsObj)
+{
+    $linkedid = (string) ($event->getKey('Linkedid') ?? $event->getKey('LinkedID') ?? '');
+    $linkedid = trim($linkedid);
+    if ($linkedid === '') {
+        return;
+    }
+
+    $intNum = trim((string) ($event->getKey('Target') ?? ''));
+    if ($intNum === '') {
+        return;
+    }
+
+    $dialStatus = (string) ($event->getKey('DialStatus') ?? '');
+
+    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
+    if ($callId && !empty($globalsObj->callShownCards[$linkedid][$intNum])) {
+        $helper->hideInputCall($intNum, $callId);
+    }
+
+    unset($globalsObj->callShownCards[$linkedid][$intNum]);
+
+    $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
+    if ($agentUniqueId !== '') {
+        unset($globalsObj->uniqueidToLinkedid[$agentUniqueId]);
+        unset($globalsObj->intNums[$agentUniqueId]);
+    }
+
+    if (isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
+        unset($globalsObj->ringingIntNums[$linkedid][$intNum]);
+        if (empty($globalsObj->ringingIntNums[$linkedid])) {
+            unset($globalsObj->ringingIntNums[$linkedid]);
+        }
+    }
+
+    if (isset($globalsObj->ringOrder[$linkedid])) {
+        $globalsObj->ringOrder[$linkedid] = array_values(array_filter(
+            $globalsObj->ringOrder[$linkedid],
+            function ($value) use ($intNum) {
+                return (string) $value !== $intNum;
+            }
+        ));
+        if (empty($globalsObj->ringOrder[$linkedid])) {
+            unset($globalsObj->ringOrder[$linkedid]);
+        }
+    }
+
+    if (isset($globalsObj->callIdByInt[$intNum])) {
+        unset($globalsObj->callIdByInt[$intNum]);
+    }
+
+    $helper->writeToLog(array(
+        'event' => 'CallMeRingingStop',
+        'linkedid' => $linkedid,
+        'intNum' => $intNum,
+        'dialStatus' => $dialStatus,
+        'call_id' => $callId,
+        'agentUniqueid' => $agentUniqueId,
+    ), 'UserEvent CallMeRingingStop');
 }
 
 /**
@@ -503,13 +740,22 @@ function callme_handle_dial_begin_common(
         $globalsObj->ringOrder[$linkedid][] = $exten;
     }
 
-    $userId = $helper->getUSER_IDByIntNum($exten);
-    $globalsObj->ringingIntNums[$linkedid][$exten] = array(
-        'user_id' => $userId,
-        'timestamp' => time(),
-        'state' => 'RING',
-        'shown' => !empty($globalsObj->callShownCards[$linkedid][$exten]),
-    );
+    $existingEntry = $globalsObj->ringingIntNums[$linkedid][$exten] ?? array();
+    if (empty($existingEntry['user_id'])) {
+        $existingEntry['user_id'] = $helper->getUSER_IDByIntNum($exten);
+    }
+    $existingEntry['timestamp'] = time();
+    $existingEntry['state'] = 'RING';
+    if (!empty($destUniqueId)) {
+        $existingEntry['agent_uniqueid'] = $destUniqueId;
+    }
+    if (empty($existingEntry['direction'])) {
+        $existingEntry['direction'] = 'inbound';
+    }
+    $existingEntry['shown'] = !empty($globalsObj->callShownCards[$linkedid][$exten]) && !empty($existingEntry['shown']) ? true : false;
+
+    $globalsObj->ringingIntNums[$linkedid][$exten] = $existingEntry;
+    $userId = $existingEntry['user_id'] ?? null;
     $helper->writeToLog(array(
         'linkedid' => $linkedid,
         'intNum' => $exten,
@@ -930,6 +1176,33 @@ $pamiClient->registerEventListener(
             && (strpos($channel, 'Local/') !== 0)
             ;
 }
+);
+
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        ami_touch_activity($globalsObj);
+        $userEventName = (string) ($event->getKey('UserEvent') ?? '');
+        switch ($userEventName) {
+            case 'CallMeRingingStart':
+                callme_handle_user_event_ringing_start($event, $helper, $globalsObj);
+                break;
+            case 'CallMeRingingAnswer':
+                callme_handle_user_event_ringing_answer($event, $helper, $globalsObj);
+                break;
+            case 'CallMeRingingStop':
+                callme_handle_user_event_ringing_stop($event, $helper, $globalsObj);
+                break;
+            default:
+                break;
+        }
+    },
+    function (EventMessage $event) {
+        if ($event->getName() !== 'UserEvent') {
+            return false;
+        }
+        $userEventName = (string) ($event->getKey('UserEvent') ?? '');
+        return in_array($userEventName, array('CallMeRingingStart', 'CallMeRingingAnswer', 'CallMeRingingStop'), true);
+    }
 );
 
 //обрабатываем VarSetEvent события, получаем url записи звонка
