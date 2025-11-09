@@ -507,7 +507,16 @@ function callme_handle_dial_begin_common(
         'callerNormalized' => $normalizedCaller,
     ), 'DialBegin: RING state updated');
 
-    if (empty($globalsObj->callShownCards[$linkedid]) || !is_array($globalsObj->callShownCards[$linkedid])) {
+    $hasUnshownRinging = false;
+    foreach ($globalsObj->ringingIntNums[$linkedid] as $ringInt => $ringInfo) {
+        $state = $ringInfo['state'] ?? 'RING';
+        $shown = $ringInfo['shown'] ?? false;
+        if ($state === 'RING' && !$shown) {
+            $hasUnshownRinging = true;
+            break;
+        }
+    }
+    if ($hasUnshownRinging) {
         callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
     }
 
