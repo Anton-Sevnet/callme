@@ -488,6 +488,10 @@ function callme_handle_dial_begin_common(
         'callerNormalized' => $normalizedCaller,
     ), 'DialBegin: RING state updated');
 
+    if (empty($globalsObj->callShownCards[$linkedid]) || !is_array($globalsObj->callShownCards[$linkedid])) {
+        callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
+    }
+
     $call_id = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
     if ($call_id) {
         $globalsObj->calls[$callUniqueid] = $call_id;
