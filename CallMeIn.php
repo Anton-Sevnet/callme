@@ -824,6 +824,12 @@ function callme_handle_dial_begin_common(
     if (!isset($globalsObj->uniqueidToLinkedid[$linkedidOriginal])) {
         $globalsObj->uniqueidToLinkedid[$linkedidOriginal] = $linkedid;
     }
+    if (!isset($globalsObj->callDirections[$linkedid])) {
+        $globalsObj->callDirections[$linkedid] = 'inbound';
+    }
+    if (!isset($globalsObj->callDirections[$linkedidOriginal])) {
+        $globalsObj->callDirections[$linkedidOriginal] = 'inbound';
+    }
 
     $normalizedCaller = callme_normalize_phone($callerNumberRaw);
 
@@ -1051,6 +1057,7 @@ $pamiClient->registerEventListener(
                 //добавляем звонок в массив, для обработки в других ивентах
                 $globalsObj->uniqueids[] = $callLinkedid;
                 $globalsObj->Dispositions[$callLinkedid] = 'NO ANSWER';
+                $globalsObj->callDirections[$callLinkedid] = 'inbound';
                 //берем Exten из ивента
 
                 //логируем параметры звонка
@@ -1755,9 +1762,24 @@ $pamiClient->registerEventListener(
                 }
 //                $CallDuration = $CallDuration ? $CallDuration : 1;
 
-                $CallDisposition = $globalsObj->Dispositions[$callLinkedid];
+                $CallDisposition = strtoupper((string)($globalsObj->Dispositions[$callLinkedid] ?? ''));
                 $linkedid = $globalsObj->uniqueidToLinkedid[$callLinkedid] ?? $callLinkedid;
                 $call_id = $globalsObj->calls[$callLinkedid] ?? ($globalsObj->callIdByLinkedid[$linkedid] ?? null);
+                $direction = 'inbound';
+                if ($linkedid && isset($globalsObj->callDirections[$linkedid])) {
+                    $direction = $globalsObj->callDirections[$linkedid];
+                }
+                $isOriginate = false;
+                if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+                    $isOriginate = $globalsObj->originateCalls[$linkedid]['is_originate'] ?? false;
+                    if ($isOriginate) {
+                        $direction = 'outbound';
+                    }
+                }
+                if ($direction === 'inbound' && $CallDisposition === 'CANCEL') {
+                    $CallDisposition = 'NO ANSWER';
+                    $globalsObj->Dispositions[$callLinkedid] = $CallDisposition;
+                }
                 
                 // FALLBACK: Если не нашли call_id - пропускаем обработку
                 if (empty($call_id)) {
@@ -1900,6 +1922,9 @@ $pamiClient->registerEventListener(
                 if ($linkedid && isset($globalsObj->callCrmData[$linkedid])) {
                     unset($globalsObj->callCrmData[$linkedid]);
                 }
+                if ($linkedid && isset($globalsObj->callDirections[$linkedid])) {
+                    unset($globalsObj->callDirections[$linkedid]);
+                }
                 
                 // Очищаем маппинг linkedid если он был создан для обычного звонка
                 if (isset($globalsObj->uniqueidToLinkedid[$callLinkedid])) {
@@ -1993,6 +2018,7 @@ $pamiClient->registerEventListener(
             // Если структура уже есть - просто помечаем как Originate
             $globalsObj->originateCalls[$linkedid]['is_originate'] = true;
         }
+        $globalsObj->callDirections[$linkedid] = 'outbound';
         
         // Добавляем канал в список
         $globalsObj->originateCalls[$linkedid]['channels'][$uniqueid] = [
@@ -2117,6 +2143,9 @@ $pamiClient->registerEventListener(
                     unset($globalsObj->uniqueidToLinkedid[$uid]);
                 }
                 unset($globalsObj->originateCalls[$linkedid]);
+                if (isset($globalsObj->callDirections[$linkedid])) {
+                    unset($globalsObj->callDirections[$linkedid]);
+                }
             }
         }
     },
@@ -2253,6 +2282,9 @@ $pamiClient->registerEventListener(
                 }
                 
                 unset($globalsObj->originateCalls[$linkedid]);
+                if (isset($globalsObj->callDirections[$linkedid])) {
+                    unset($globalsObj->callDirections[$linkedid]);
+                }
             }
         }
     },
