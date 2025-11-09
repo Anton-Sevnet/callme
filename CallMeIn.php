@@ -649,31 +649,6 @@ $pamiClient->registerEventListener(
 
 // Диагностическое логирование событий Dial (Asterisk 1.8)
 $pamiClient->registerEventListener(
-    function (EventMessage $event) use ($helper) {
-        if (!($event instanceof DialEvent)) {
-            return;
-        }
-        $keys = $event->getKeys();
-        $helper->writeToLog(array(
-            'SubEvent' => $keys['SubEvent'] ?? null,
-            'Channel' => $keys['Channel'] ?? null,
-            'Destination' => $keys['Destination'] ?? null,
-            'DialString' => $keys['DialString'] ?? null,
-            'CallerIDNum' => $keys['CallerIDNum'] ?? null,
-            'CallerIDName' => $keys['CallerIDName'] ?? null,
-            'DestCallerIDNum' => $keys['DestCallerIDNum'] ?? null,
-            'DestCallerIDName' => $keys['DestCallerIDName'] ?? null,
-            'Uniqueid' => $keys['UniqueID'] ?? ($keys['Uniqueid'] ?? null),
-            'DestUniqueid' => $keys['DestUniqueID'] ?? null,
-        ), 'DialEvent captured');
-        $helper->writeToLog($event->getRawContent(), 'DialEvent raw');
-    },
-    function (EventMessage $event) {
-        return $event instanceof DialEvent;
-    }
-);
-
-$pamiClient->registerEventListener(
             function (EventMessage $event) use ($helper,$callami,$globalsObj){
                 //выгребаем параметры звонка
 
@@ -1077,6 +1052,7 @@ $pamiClient->registerEventListener(
 //обрабатываем VarSetEvent для BRIDGEPEER - отслеживание transfer через изменение BRIDGEPEER
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
+        return; // legacy BRIDGEPEER handler disabled
         if ($event->getVariableName() !== 'BRIDGEPEER') {
             return;
         }
@@ -1450,6 +1426,7 @@ $pamiClient->registerEventListener(
 //обрабатываем BridgeEvent события для отслеживания transfer звонков
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
+        return; // legacy BridgeEvent handler disabled
         // Проверяем что это BridgeEvent со статусом Link
         if (!($event instanceof BridgeEvent) || $event->getBridgeState() !== 'Link') {
             return;
