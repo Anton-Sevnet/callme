@@ -678,51 +678,70 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
         return;
     }
 
-    $dialStatus = (string) ($event->getKey('DialStatus') ?? '');
+    $dialStatusRaw = (string) ($event->getKey('DialStatus') ?? '');
+    $dialStatus = strtoupper(trim($dialStatusRaw));
+    $cleanupOnStop = !in_array($dialStatus, array('ANSWER', 'ANSWERED'), true);
 
     $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
-    if ($callId && callme_is_card_marked_shown($linkedid, $intNum, $globalsObj)) {
+    if ($callId && callme_is_card_marked_shown($linkedid, $intNum, $globalsObj) && $cleanupOnStop) {
         $helper->hideInputCall($intNum, $callId);
     }
 
-    unset($globalsObj->callShownCards[$linkedid][$intNum]);
-
     $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
-    if ($agentUniqueId !== '') {
-        unset($globalsObj->uniqueidToLinkedid[$agentUniqueId]);
-        unset($globalsObj->intNums[$agentUniqueId]);
-    }
-
-    if (isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
-        unset($globalsObj->ringingIntNums[$linkedid][$intNum]);
-        if (empty($globalsObj->ringingIntNums[$linkedid])) {
-            unset($globalsObj->ringingIntNums[$linkedid]);
-        }
-    }
-
-    if (isset($globalsObj->ringOrder[$linkedid])) {
-        $globalsObj->ringOrder[$linkedid] = array_values(array_filter(
-            $globalsObj->ringOrder[$linkedid],
-            function ($value) use ($intNum) {
-                return (string) $value !== $intNum;
+    if ($cleanupOnStop) {
+        if (isset($globalsObj->callShownCards[$linkedid][$intNum])) {
+            unset($globalsObj->callShownCards[$linkedid][$intNum]);
+            if (empty($globalsObj->callShownCards[$linkedid])) {
+                unset($globalsObj->callShownCards[$linkedid]);
             }
-        ));
-        if (empty($globalsObj->ringOrder[$linkedid])) {
-            unset($globalsObj->ringOrder[$linkedid]);
         }
-    }
 
-    if (isset($globalsObj->callIdByInt[$intNum])) {
-        unset($globalsObj->callIdByInt[$intNum]);
+        if ($agentUniqueId !== '') {
+            unset($globalsObj->uniqueidToLinkedid[$agentUniqueId]);
+            unset($globalsObj->intNums[$agentUniqueId]);
+        }
+
+        if (isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
+            unset($globalsObj->ringingIntNums[$linkedid][$intNum]);
+            if (empty($globalsObj->ringingIntNums[$linkedid])) {
+                unset($globalsObj->ringingIntNums[$linkedid]);
+            }
+        }
+
+        if (isset($globalsObj->ringOrder[$linkedid])) {
+            $globalsObj->ringOrder[$linkedid] = array_values(array_filter(
+                $globalsObj->ringOrder[$linkedid],
+                function ($value) use ($intNum) {
+                    return (string) $value !== $intNum;
+                }
+            ));
+            if (empty($globalsObj->ringOrder[$linkedid])) {
+                unset($globalsObj->ringOrder[$linkedid]);
+            }
+        }
+
+        if (isset($globalsObj->callIdByInt[$intNum])) {
+            unset($globalsObj->callIdByInt[$intNum]);
+        }
+    } else {
+        if (!isset($globalsObj->ringingIntNums[$linkedid])) {
+            $globalsObj->ringingIntNums[$linkedid] = array();
+        }
+        if (!isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
+            $globalsObj->ringingIntNums[$linkedid][$intNum] = array();
+        }
+        $globalsObj->ringingIntNums[$linkedid][$intNum]['state'] = 'STOP_DEFERRED';
+        $globalsObj->ringingIntNums[$linkedid][$intNum]['timestamp'] = time();
     }
 
     $helper->writeToLog(array(
         'event' => 'CallMeRingingStop',
         'linkedid' => $linkedid,
         'intNum' => $intNum,
-        'dialStatus' => $dialStatus,
+        'dialStatus' => $dialStatusRaw,
         'call_id' => $callId,
         'agentUniqueid' => $agentUniqueId,
+        'cleanupOnStop' => $cleanupOnStop,
     ), 'UserEvent CallMeRingingStop');
 }
 
