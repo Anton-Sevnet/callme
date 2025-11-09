@@ -472,9 +472,23 @@ function callme_handle_dial_begin_common(
         $linkedid = $linkedidOriginal;
     }
 
+    if (!isset($globalsObj->callIdByLinkedid[$linkedid]) && strpos((string)$linkedid, '.') !== false) {
+        $linkedidBase = explode('.', (string)$linkedid)[0];
+        foreach ($globalsObj->callIdByLinkedid as $knownLinkedid => $knownCallId) {
+            $knownBase = explode('.', (string)$knownLinkedid)[0] ?? '';
+            if ($knownBase === $linkedidBase) {
+                $linkedid = $knownLinkedid;
+                break;
+            }
+        }
+    }
+
     $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
     if (!empty($destUniqueId)) {
         $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
+    }
+    if (!isset($globalsObj->uniqueidToLinkedid[$linkedidOriginal])) {
+        $globalsObj->uniqueidToLinkedid[$linkedidOriginal] = $linkedid;
     }
 
     $normalizedCaller = callme_normalize_phone($callerNumberRaw);
