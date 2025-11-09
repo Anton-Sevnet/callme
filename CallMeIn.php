@@ -264,6 +264,26 @@ function callme_show_cards_for_ringing($linkedid, $helper, $globalsObj)
     }
     $call_id = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
     if (!$call_id) {
+        foreach ($globalsObj->ringingIntNums[$linkedid] ?? array() as $intNum => $ringData) {
+            $candidate = $globalsObj->callIdByInt[$intNum] ?? null;
+            if ($candidate) {
+                $call_id = $candidate;
+                break;
+            }
+        }
+        if (!$call_id) {
+            foreach ($globalsObj->calls as $uniq => $storedCallId) {
+                if (($globalsObj->uniqueidToLinkedid[$uniq] ?? null) === $linkedid) {
+                    $call_id = $storedCallId;
+                    break;
+                }
+            }
+        }
+        if ($call_id) {
+            $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+        }
+    }
+    if (!$call_id) {
         return;
     }
     if (empty($globalsObj->ringingIntNums[$linkedid]) || !is_array($globalsObj->ringingIntNums[$linkedid])) {
@@ -438,19 +458,18 @@ function callme_handle_dial_begin_common(
     HelperFuncs $helper,
     Globals $globalsObj
 ) {
+    $linkedidOriginal = $linkedid;
+    if (empty($linkedidOriginal)) {
+        $linkedidOriginal = $callUniqueid;
+    }
+
     $mappedLinkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid] ?? null;
     if (!empty($mappedLinkedid)) {
         $linkedid = $mappedLinkedid;
     } elseif (!empty($destUniqueId) && isset($globalsObj->uniqueidToLinkedid[$destUniqueId])) {
         $linkedid = $globalsObj->uniqueidToLinkedid[$destUniqueId];
-    }
-    if (empty($linkedid)) {
-        $linkedid = $callUniqueid;
-    }
-
-    $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
-    if (!empty($destUniqueId)) {
-        $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
+    } else {
+        $linkedid = $linkedidOriginal;
     }
 
     $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
