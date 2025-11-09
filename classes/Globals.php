@@ -26,6 +26,10 @@ class Globals {
     public $callDirections = array(); // [linkedid => 'inbound']
     //Текущий Call ID, закреплённый за внутренними номерами (для быстрого доступа при событиях AMI)
     public $callIdByInt = array(); // ['100' => CALL_ID]
+    //Маппинг CardId (CALLME_CARD_ID) -> CALL_ID
+    public $callIdByCardId = array();
+    //Маппинг linkedid -> CardId
+    public $cardIdByLinkedid = array();
 	//массив с uniqueid внешних звонкнов
     public $uniqueids = array();
 	//массив FullFname (url'ы записей разговоров), ключ - Uniqueid из asterisk
