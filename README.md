@@ -164,7 +164,7 @@
 
 ### 4. **Устойчивость AMI соединения и watchdog**
 
-- Отслеживание активности по событиям AMI и быстрому хэшу ключевых массивов (`calls`, `originateCalls`, `transferHistory`, `Onhold`).
+- Отслеживание активности по событиям AMI и быстрому хэшу ключевых массивов (`calls`, `originateCalls`, `Onhold`).
 - Если 30 секунд нет данных и состояние звонков не меняется, выполняется `PingAction`; успешный ответ сбрасывает таймеры, а сбой автоматически инициирует безопасный reconnect.
 - При отсутствии активных звонков health-check не запускается, что исключает лишние пинги.
 - Логи стабильности выводятся в `logs/ami_healthcheck.log` с разделением по каналам `ping`, `watchdog`, `reconnect`.
@@ -293,21 +293,7 @@ $globalsObj->originateCalls[$linkedid] = [
 ];
 ```
 
-### 3. **История Transfer'ов**
-
-```php
-$globalsObj->transferHistory[$externalUniqueid] = [
-    'externalChannel' => 'SIP/trunk-000026d8',
-    'externalUniqueid' => '1761855304.108488',
-    'call_id' => 'externalCall.xxx',
-    'currentIntNum' => 220,  // Текущий абонент
-    'history' => [
-        ['from' => 219, 'to' => 220, 'timestamp' => 1730036445]
-    ]
-];
-```
-
-### 4. **Маппинг Uniqueid → Linkedid**
+### 3. **Маппинг Uniqueid → Linkedid**
 
 ```php
 $globalsObj->uniqueidToLinkedid[$uniqueid] = $linkedid;
@@ -576,7 +562,7 @@ tail -f /var/www/callme/logs/CallMe.log
 
 ### Health-check AMI и watchdog
 
-- Каждому событию AMI соответствует отметка активности, а состояние активных массивов (`calls`, `originateCalls`, `transferHistory`, `Onhold`) фиксируется через компактный хеш.
+- Каждому событию AMI соответствует отметка активности, а состояние активных массивов (`calls`, `originateCalls`, `Onhold`) фиксируется через компактный хеш.
 - Если 30 секунд не приходит данных по AMI и хеш не меняется, при наличии активных звонков выполняется `PingAction`; успешный ответ сбрасывает таймеры, провал приводит к безопасному переподключению.
 - При пустых массивах health-check не запускается, что исключает лишние пинги в моменты простоя.
 - Для диагностики используется отдельный лог `logs/ami_healthcheck.log` с каналами `ping`, `watchdog`, `reconnect` (управляются параметром `ami_healthcheck_log`).
@@ -589,7 +575,7 @@ tail -f /var/www/callme/logs/CallMe.log
 sudo asterisk -rx "manager show connected"
 
 # 2. Проверка событий в логах
-tail -f /var/www/callme/logs/CallMe.log | grep "ORIGINATE\|TRANSFER"
+tail -f /var/www/callme/logs/CallMe.log | grep "ORIGINATE\|CALLME_CARD_STATE"
 
 # 3. Тестовый входящий звонок
 # Позвоните на один из номеров из 'extentions'

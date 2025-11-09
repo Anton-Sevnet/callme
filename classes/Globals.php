@@ -49,10 +49,6 @@ class Globals {
     // Для отслеживания Originate-звонков (исходящие через Bitrix24) - ВЕРСИЯ С LINKEDID
     public $originateCalls = array();      // [linkedId => ['call_id'=>..., 'intNum'=>..., 'channels'=>[], 'answered'=>bool]]
     public $uniqueidToLinkedid = array();  // [uniqueid => linkedId] - маппинг для быстрого поиска
-    
-    // Для отслеживания Transfer звонков (переключение между внутренними абонентами)
-    public $transferHistory = array();     // [externalUniqueid => ['call_id'=>..., 'externalChannel'=>..., 'currentIntNum'=>..., 'history'=>[]]]
-
     // Состояние health-check AMI
     public $amiState = array();
 

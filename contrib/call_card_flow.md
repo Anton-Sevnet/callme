@@ -5,7 +5,7 @@
 - **Хранилище состояния.** Синглтон `Globals` ведёт активные звонки:
   - соответствия `uniqueid ↔ linkedid` и `linkedid → CALL_ID`;
   - текущее состояние внутренних (`ringingIntNums`, `callShownCards`, `ringOrder`);
-  - связи `intNum → CALL_ID` (`callIdByInt`), историю трансферов (`transferHistory`).
+  - связи `intNum → CALL_ID` (`callIdByInt`).
 - **Нормализация и CRM.** На `Newchannel` номер нормализуется и ищется в Bitrix24. CallerID в АТС обновляется именем из CRM.
 - **Регистрация сразу.** Звонок регистрируется в Bitrix24 немедленно на ответственного пользователя; если у него нет внутреннего, используется `fallback_responsible_user_id`.
 - **Сигнализация из Asterisk.** В `macro-dial-one` перед и после `Dial()` выставляется `CALLME_CARD_STATE=SHOW:<int>` / `HIDE:<int>`. Эти VarSet-события ловит `CallMeIn.php` и решает, кому показать или скрыть карточку.
@@ -35,16 +35,11 @@
 - Статус сохраняется в `Dispositions`, массивы `ringingIntNums` корректируются, чтобы последующие события VarSet не дублировались.
 - При ответе карточки у остальных скрываются через VarSet (`HIDE`).
 
-### Bridge/BRIDGEPEER (трансферы)
-
-- `BridgeEvent` и `VarSet(BRIDGEPEER)` отслеживают перевод звонка.
-- Карточка «переезжает» за каналом: старому оператору шлётся `hideInputCall`, новому — `showInputCall`, история сохраняется в `transferHistory`.
-
 ### Hangup
 
 - `telephony.externalcall.finish` отправляется с длительностью и статусом.
 - Карточки скрываются (на случай, если последний VarSet не пришёл вовремя).
-- Чистятся `callShownCards`, `ringingIntNums`, `callIdByInt`, `uniqueidToLinkedid`, `transferHistory`.
+- Чистятся `callShownCards`, `ringingIntNums`, `callIdByInt`, `uniqueidToLinkedid`.
 
 ## Особые случаи
 
@@ -65,13 +60,13 @@
 ## Проверка конфигурации
 
 - Убедитесь, что в `config.php` заполнены `bitrixApiUrl`, `extentions`, `user_show_cards`, `fallback_responsible_user_id`.
-- На АТС должен быть подключён блок `macro-dial-one-custom` из `extensions_custom.callme.conf`, чтобы VarSet `CALLME_CARD_STATE` действительно отправлялся (проверьте `dialplan show macro-dial-one`).
+- На АТС должен быть активен блок `macro-dial-one-custom` в `extensions_override_freepbx.callme.conf`, чтобы VarSet `CALLME_CARD_STATE` действительно отправлялся (проверьте `dialplan show macro-dial-one`).
 - Для отладки включите `CallMeDEBUG`, VarSet события видно в `logs/CallMe.log`.
 
 ## Что тестировать
 
 1. Входящий на прямой внутренний: карточка появляется при RING, скрывается после ответа/сброса.
 2. Очередь/ring-group: SHOW/HIDE приходят на каждого агента; при ответе карточка остаётся у отвечающего.
-3. Трансфер между сотрудниками: карточка переходит по `BRIDGEPEER`.
-4. Сценарий без ответственного: регистрация на fallback и корректные VarSet.
+3. Сценарий без ответственного: регистрация на fallback и корректные VarSet.
+4. Исходящий (Originate) по клику: карточка поднимается у инициатора и скрывается после завершения.
 
