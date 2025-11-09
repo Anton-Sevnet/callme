@@ -289,14 +289,20 @@ class HelperFuncs {
 	 *
 	 * @return array|false Result from API or false on error
 	 */
-	public function finishCall($call_id, $intNum, $duration, $statusCode){
-		$result = $this->getBitrixApi(array(
-			'USER_PHONE_INNER' => $intNum,
-			'CALL_ID' => $call_id,
-			'STATUS_CODE' => $statusCode,
-			'DURATION' => $duration,
-			'RECORD_URL' => '' // Пустая строка - запись будет прикреплена потом
-		), 'telephony.externalcall.finish');
+    public function finishCall($call_id, $intNum, $duration, $statusCode, $userId = null){
+        $payload = array(
+            'USER_PHONE_INNER' => $intNum,
+            'CALL_ID' => $call_id,
+            'STATUS_CODE' => $statusCode,
+            'DURATION' => $duration,
+            'RECORD_URL' => '' // Пустая строка - запись будет прикреплена потом
+        );
+
+        if ($userId !== null) {
+            $payload['USER_ID'] = (int)$userId;
+        }
+
+		$result = $this->getBitrixApi($payload, 'telephony.externalcall.finish');
 		
 		if ($result){
 			return $result;
@@ -427,7 +433,7 @@ class HelperFuncs {
      * @return array<int|string,mixed>
      */
     public function hideInputCallList($call_id, array $intNums, $excludeIntNum = null){
-        $results = array();
+        $targets = array();
         foreach ($intNums as $intNum) {
             $intNum = (string)$intNum;
             if ($intNum === '') {
@@ -436,9 +442,16 @@ class HelperFuncs {
             if ($excludeIntNum !== null && (string)$excludeIntNum === $intNum) {
                 continue;
             }
-            $results[$intNum] = $this->hideInputCall($intNum, $call_id);
+            $userId = $this->getUSER_IDByIntNum($intNum);
+            if (!$userId) {
+                continue;
+            }
+            $targets[] = array(
+                'user_id' => (int)$userId,
+                'int_num' => $intNum,
+            );
         }
-        return $results;
+        return $this->hideInputCallForTargets($call_id, $targets);
     }
 
     /**
@@ -898,6 +911,48 @@ class HelperFuncs {
 		} else 
 			return false;
 	}
+
+    /**
+     * Hide call cards for a prepared list of targets in a single Bitrix24 request.
+     *
+     * @param string $call_id
+     * @param array<int,array{user_id:int,int_num:string}> $targets
+     * @return array|false
+     */
+    public function hideInputCallForTargets($call_id, array $targets){
+        $userIds = array();
+        $userPhones = array();
+
+        foreach ($targets as $target) {
+            if (!is_array($target)) {
+                continue;
+            }
+            $userId = isset($target['user_id']) ? (int)$target['user_id'] : 0;
+            $intNum = isset($target['int_num']) ? (string)$target['int_num'] : '';
+            if ($userId <= 0) {
+                continue;
+            }
+            $userIds[] = $userId;
+            if ($intNum !== '') {
+                $userPhones[] = $intNum;
+            }
+        }
+
+        if (empty($userIds)) {
+            return false;
+        }
+
+        $payload = array(
+            'CALL_ID' => $call_id,
+            'USER_ID' => array_values(array_unique($userIds)),
+        );
+
+        if (!empty($userPhones)) {
+            $payload['USER_PHONE_INNER'] = array_values(array_unique($userPhones));
+        }
+
+        return $this->getBitrixApi($payload, 'telephony.externalcall.hide');
+    }
 
     public function crmStatusList(){
         $result = $this->getBitrixApi(array(

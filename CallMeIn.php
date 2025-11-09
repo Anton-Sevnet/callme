@@ -295,7 +295,14 @@ function callme_show_cards_for_ringing($linkedid, $helper, $globalsObj)
         if ($state !== 'RING') {
             continue;
         }
-        if (!empty($globalsObj->callShownCards[$linkedid][$intNum])) {
+        $shownEntry = $globalsObj->callShownCards[$linkedid][$intNum] ?? null;
+        $alreadyShown = false;
+        if (is_array($shownEntry)) {
+            $alreadyShown = !empty($shownEntry['shown']);
+        } else {
+            $alreadyShown = !empty($shownEntry);
+        }
+        if ($alreadyShown) {
             continue;
         }
         callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj);
@@ -328,7 +335,7 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
         return;
     }
 
-    if (!empty($globalsObj->callShownCards[$linkedid][$intNum])) {
+    if (callme_is_card_marked_shown($linkedid, $intNum, $globalsObj)) {
         return;
     }
 
@@ -346,7 +353,12 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
         if (!isset($globalsObj->callShownCards[$linkedid])) {
             $globalsObj->callShownCards[$linkedid] = array();
         }
-        $globalsObj->callShownCards[$linkedid][$intNum] = true;
+        $globalsObj->callShownCards[$linkedid][$intNum] = array(
+            'user_id' => $userId ? (int)$userId : null,
+            'int_num' => (string)$intNum,
+            'shown' => true,
+            'shown_at' => time(),
+        );
         if (!isset($globalsObj->ringingIntNums[$linkedid])) {
             $globalsObj->ringingIntNums[$linkedid] = array();
         }
@@ -358,6 +370,124 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
         $globalsObj->ringingIntNums[$linkedid][$intNum]['shown'] = true;
         $globalsObj->ringingIntNums[$linkedid][$intNum]['timestamp'] = time();
     }
+}
+
+/**
+ * Проверяет, отмечена ли карточка как показанная для указанного внутреннего номера.
+ *
+ * @param string $linkedid
+ * @param string $intNum
+ * @param Globals $globalsObj
+ * @return bool
+ */
+function callme_is_card_marked_shown($linkedid, $intNum, Globals $globalsObj)
+{
+    if (!isset($globalsObj->callShownCards[$linkedid][$intNum])) {
+        return false;
+    }
+    $entry = $globalsObj->callShownCards[$linkedid][$intNum];
+    if (is_array($entry)) {
+        return !empty($entry['shown']);
+    }
+    return (bool)$entry;
+}
+
+/**
+ * Собирает список целей (пользователь/внутренний номер), для которых карточка была показана.
+ *
+ * @param string $linkedid
+ * @param HelperFuncs $helper
+ * @param Globals $globalsObj
+ * @param string|null $excludeIntNum
+ * @return array<int,array{user_id:int,int_num:string}>
+ */
+function callme_collect_shown_card_targets($linkedid, HelperFuncs $helper, Globals $globalsObj, $excludeIntNum = null)
+{
+    $targets = array();
+    if (empty($linkedid)) {
+        return $targets;
+    }
+    if (empty($globalsObj->callShownCards[$linkedid]) || !is_array($globalsObj->callShownCards[$linkedid])) {
+        return $targets;
+    }
+
+    foreach ($globalsObj->callShownCards[$linkedid] as $intNum => $cardInfo) {
+        $intNumStr = (string)$intNum;
+        if ($intNumStr === '') {
+            continue;
+        }
+        if ($excludeIntNum !== null && (string)$excludeIntNum === $intNumStr) {
+            continue;
+        }
+
+        $userId = null;
+        if (is_array($cardInfo) && isset($cardInfo['user_id'])) {
+            $userId = (int)$cardInfo['user_id'];
+        }
+        if (!$userId && isset($globalsObj->ringingIntNums[$linkedid][$intNum]['user_id'])) {
+            $userId = (int)$globalsObj->ringingIntNums[$linkedid][$intNum]['user_id'];
+        }
+        if (!$userId) {
+            $userId = (int)$helper->getUSER_IDByIntNum($intNumStr);
+        }
+        if ($userId <= 0) {
+            continue;
+        }
+
+        if (!is_array($cardInfo)) {
+            $globalsObj->callShownCards[$linkedid][$intNum] = array();
+        }
+        $globalsObj->callShownCards[$linkedid][$intNum]['user_id'] = $userId;
+        $globalsObj->callShownCards[$linkedid][$intNum]['int_num'] = $intNumStr;
+        $globalsObj->callShownCards[$linkedid][$intNum]['shown'] = true;
+        $globalsObj->callShownCards[$linkedid][$intNum]['updated_at'] = time();
+
+        $targets[] = array(
+            'user_id' => $userId,
+            'int_num' => $intNumStr,
+        );
+    }
+
+    return $targets;
+}
+
+/**
+ * Выполняет групповое скрытие карточек звонка для указанного linkedid.
+ *
+ * @param string $linkedid
+ * @param string $call_id
+ * @param HelperFuncs $helper
+ * @param Globals $globalsObj
+ * @param string|null $excludeIntNum
+ * @return array{result:array|false,targets:array}
+ */
+function callme_hide_cards_batch($linkedid, $call_id, HelperFuncs $helper, Globals $globalsObj, $excludeIntNum = null)
+{
+    $targets = callme_collect_shown_card_targets($linkedid, $helper, $globalsObj, $excludeIntNum);
+    if (empty($targets) || !$call_id) {
+        return array('result' => false, 'targets' => array());
+    }
+
+    $hideResult = $helper->hideInputCallForTargets($call_id, $targets);
+
+    foreach ($targets as $target) {
+        $intNum = $target['int_num'];
+        if (isset($globalsObj->callShownCards[$linkedid][$intNum])) {
+            unset($globalsObj->callShownCards[$linkedid][$intNum]);
+        }
+    }
+    if (isset($globalsObj->callShownCards[$linkedid]) && empty($globalsObj->callShownCards[$linkedid])) {
+        unset($globalsObj->callShownCards[$linkedid]);
+    }
+
+    $helper->writeToLog(array(
+        'linkedid' => $linkedid,
+        'call_id' => $call_id,
+        'targets' => $targets,
+        'result' => $hideResult,
+    ), 'Batch hide call cards');
+
+    return array('result' => $hideResult, 'targets' => $targets);
 }
 
 /**
@@ -396,7 +526,7 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
     $ringEntry['direction'] = $direction ?: ($ringEntry['direction'] ?? 'inbound');
     $ringEntry['state'] = 'RING';
     $ringEntry['timestamp'] = time();
-    $ringEntry['shown'] = !empty($globalsObj->callShownCards[$linkedid][$intNum]);
+    $ringEntry['shown'] = callme_is_card_marked_shown($linkedid, $intNum, $globalsObj);
 
     $globalsObj->ringingIntNums[$linkedid][$intNum] = $ringEntry;
 
@@ -460,7 +590,7 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
     }
     if (!isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
         $globalsObj->ringingIntNums[$linkedid][$intNum] = array(
-            'shown' => !empty($globalsObj->callShownCards[$linkedid][$intNum]),
+            'shown' => callme_is_card_marked_shown($linkedid, $intNum, $globalsObj),
         );
     }
 
@@ -494,17 +624,17 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
     ), 'UserEvent CallMeRingingAnswer');
 
     if ($callId) {
-        foreach ($globalsObj->callShownCards[$linkedid] ?? array() as $otherInt => $isShown) {
-            if ($otherInt === $intNum || !$isShown) {
-                continue;
-            }
-            $helper->hideInputCall($otherInt, $callId);
-            unset($globalsObj->callShownCards[$linkedid][$otherInt]);
-        }
+        callme_hide_cards_batch($linkedid, $callId, $helper, $globalsObj, $intNum);
         if (!isset($globalsObj->callShownCards[$linkedid])) {
             $globalsObj->callShownCards[$linkedid] = array();
         }
-        $globalsObj->callShownCards[$linkedid][$intNum] = true;
+        $currentUserId = $entry['user_id'] ?? $helper->getUSER_IDByIntNum($intNum);
+        $globalsObj->callShownCards[$linkedid][$intNum] = array(
+            'user_id' => $currentUserId ? (int)$currentUserId : null,
+            'int_num' => (string)$intNum,
+            'shown' => true,
+            'shown_at' => time(),
+        );
     }
 
     if (isset($globalsObj->ringingIntNums[$linkedid])) {
@@ -551,7 +681,7 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
     $dialStatus = (string) ($event->getKey('DialStatus') ?? '');
 
     $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
-    if ($callId && !empty($globalsObj->callShownCards[$linkedid][$intNum])) {
+    if ($callId && callme_is_card_marked_shown($linkedid, $intNum, $globalsObj)) {
         $helper->hideInputCall($intNum, $callId);
     }
 
@@ -719,7 +849,7 @@ function callme_handle_dial_begin_common(
     if (empty($existingEntry['direction'])) {
         $existingEntry['direction'] = 'inbound';
     }
-    $existingEntry['shown'] = !empty($globalsObj->callShownCards[$linkedid][$exten]) && !empty($existingEntry['shown']) ? true : false;
+    $existingEntry['shown'] = callme_is_card_marked_shown($linkedid, $exten, $globalsObj) || !empty($existingEntry['shown']);
 
     $globalsObj->ringingIntNums[$linkedid][$exten] = $existingEntry;
     $userId = $existingEntry['user_id'] ?? null;
@@ -803,22 +933,20 @@ function callme_handle_dial_end_common(
                                         'activeBefore' => isset($globalsObj->ringingIntNums[$linkedid]) ? array_keys($globalsObj->ringingIntNums[$linkedid]) : array()),
                                     'incoming call ANSWER');
 
-            if ($linkedid && isset($globalsObj->callShownCards[$linkedid]) && !empty($globalsObj->callShownCards[$linkedid])) {
-                $shownIntNums = array_keys($globalsObj->callShownCards[$linkedid]);
-                if ($callId) {
-                    $helper->hideInputCallList($callId, $shownIntNums, $currentIntNum);
+            if ($callId && $linkedid) {
+                callme_hide_cards_batch($linkedid, $callId, $helper, $globalsObj, $currentIntNum);
+            }
+            if ($linkedid && $currentIntNum) {
+                if (!isset($globalsObj->callShownCards[$linkedid])) {
+                    $globalsObj->callShownCards[$linkedid] = array();
                 }
-                $globalsObj->callShownCards[$linkedid] = array();
-                if ($currentIntNum) {
-                    $globalsObj->callShownCards[$linkedid][$currentIntNum] = true;
-                }
-                if (isset($globalsObj->ringingIntNums[$linkedid])) {
-                    foreach ($shownIntNums as $shownIntNum) {
-                        if ($shownIntNum !== $currentIntNum && isset($globalsObj->ringingIntNums[$linkedid][$shownIntNum])) {
-                            unset($globalsObj->ringingIntNums[$linkedid][$shownIntNum]);
-                        }
-                    }
-                }
+                $currentUserId = $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['user_id'] ?? $helper->getUSER_IDByIntNum($currentIntNum);
+                $globalsObj->callShownCards[$linkedid][$currentIntNum] = array(
+                    'user_id' => $currentUserId ? (int)$currentUserId : null,
+                    'int_num' => (string)$currentIntNum,
+                    'shown' => true,
+                    'shown_at' => time(),
+                );
             }
             if ($linkedid && isset($globalsObj->callCrmData[$linkedid])) {
                 $globalsObj->callCrmData[$linkedid]['answer_int_num'] = $currentIntNum;
@@ -840,7 +968,7 @@ function callme_handle_dial_end_common(
                 'ringOrder' => $globalsObj->ringOrder[$linkedid] ?? array(),
                 'activeBefore' => $activeBefore,
             ), 'incoming call BUSY');
-            if ($callId && $currentIntNum && !empty($globalsObj->callShownCards[$linkedid][$currentIntNum])) {
+            if ($callId && $currentIntNum && callme_is_card_marked_shown($linkedid, $currentIntNum, $globalsObj)) {
                 $helper->hideInputCall($currentIntNum, $callId);
             }
             if ($linkedid && $currentIntNum) {
@@ -867,7 +995,7 @@ function callme_handle_dial_end_common(
                 'ringOrder' => $globalsObj->ringOrder[$linkedid] ?? array(),
                 'activeBefore' => $activeBefore,
             ), 'incoming call CANCEL');
-            if ($callId && $currentIntNum && !empty($globalsObj->callShownCards[$linkedid][$currentIntNum])) {
+            if ($callId && $currentIntNum && callme_is_card_marked_shown($linkedid, $currentIntNum, $globalsObj)) {
                 $helper->hideInputCall($currentIntNum, $callId);
             }
             if ($linkedid && $currentIntNum) {
@@ -1660,28 +1788,49 @@ $pamiClient->registerEventListener(
                     'Duration'=>$CallDuration,
                     'Disposition'=>$CallDisposition), true);
                 
-                // НЕМЕДЛЕННО завершаем звонок в Битрикс (БЕЗ записи)
                 $statusCode = $helper->getStatusCodeFromDisposition($CallDisposition);
-                $finishResult = $helper->finishCall($call_id, $CallIntNum, $CallDuration, $statusCode);
-                $helper->writeToLog($finishResult, 'Call finished immediately (without record)');
-                echo "call finished immediately in B24, status: $statusCode\n";
-                
-                // Скрываем карточки у остальных участников
-                $finalCardShown = false;
-                if ($linkedid && isset($globalsObj->callShownCards[$linkedid])) {
-                    $finalCardShown = $CallIntNum && !empty($globalsObj->callShownCards[$linkedid][$CallIntNum]);
-                    $helper->hideInputCallList($call_id, array_keys($globalsObj->callShownCards[$linkedid]), $CallIntNum);
+
+                $batchHide = array('result' => false, 'targets' => array());
+                if ($linkedid) {
+                    $batchHide = callme_hide_cards_batch($linkedid, $call_id, $helper, $globalsObj);
                 }
 
-                if ($finalCardShown && $CallIntNum) {
-                    $hideResult = $helper->hideInputCall($CallIntNum, $call_id);
-                    $helper->writeToLog(array(
-                        'intNum' => $CallIntNum,
-                        'call_id' => $call_id,
-                        'hideResult' => $hideResult
-                    ), 'HangupEvent: Card hidden for user');
-                    echo "card hidden for intNum: $CallIntNum\n";
+                $primaryTarget = null;
+                if (!empty($batchHide['targets'])) {
+                    $primaryTarget = $batchHide['targets'][0];
                 }
+
+                $finishIntNum = $CallIntNum;
+                $finishUserId = null;
+                if ($primaryTarget) {
+                    $finishIntNum = $primaryTarget['int_num'] ?? $finishIntNum;
+                    $finishUserId = $primaryTarget['user_id'] ?? null;
+                }
+                if ($finishIntNum && $finishUserId === null) {
+                    $finishUserId = $helper->getUSER_IDByIntNum($finishIntNum);
+                }
+
+                $finishResult = false;
+                if ($finishIntNum) {
+                    $finishResult = $helper->finishCall($call_id, $finishIntNum, $CallDuration, $statusCode, $finishUserId);
+                    $helper->writeToLog(array(
+                        'finishIntNum' => $finishIntNum,
+                        'finishUserId' => $finishUserId,
+                        'statusCode' => $statusCode,
+                        'result' => $finishResult,
+                        'duration' => $CallDuration,
+                        'batchTargets' => $batchHide['targets'],
+                    ), 'Call finished after batch hide');
+                    echo "call finished immediately in B24, status: $statusCode\n";
+                } else {
+                    $helper->writeToLog(array(
+                        'call_id' => $call_id,
+                        'statusCode' => $statusCode,
+                        'duration' => $CallDuration,
+                        'reason' => 'Finish skipped: no internal number determined',
+                    ), 'Call finish skipped');
+                }
+
                 if ($linkedid) {
                     unset($globalsObj->callShownCards[$linkedid]);
                     unset($globalsObj->ringingIntNums[$linkedid]);
