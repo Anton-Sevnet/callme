@@ -33,6 +33,31 @@ if (!function_exists('callme_normalize_phone')) {
     }
 }
 
+if (!function_exists('callme_channel_base')) {
+    /**
+     * Возвращает канал без суффиксов ";1" и динамических хвостов "-0000000a".
+     *
+     * @param string $channel
+     * @return string
+     */
+    function callme_channel_base($channel)
+    {
+        if ($channel === null) {
+            return '';
+        }
+
+        $normalized = (string) $channel;
+        if ($normalized === '') {
+            return '';
+        }
+
+        $normalized = preg_replace('/;.*$/', '', $normalized);
+        $normalized = preg_replace('/-[^-]+$/', '', $normalized);
+
+        return (string) $normalized;
+    }
+}
+
 /*
 * start: for events listener
 */
@@ -263,11 +288,19 @@ function callme_show_cards_for_ringing($linkedid, $helper, $globalsObj)
         return;
     }
     $call_id = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
-    if (!$call_id) {
-        $cardId = $globalsObj->cardIdByLinkedid[$linkedid] ?? null;
-        if ($cardId && isset($globalsObj->callIdByCardId[$cardId])) {
-            $call_id = $globalsObj->callIdByCardId[$cardId];
-            $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+    if (!$call_id && !empty($globalsObj->transferHistory)) {
+        foreach ($globalsObj->transferHistory as $transferData) {
+            if (!is_array($transferData)) {
+                continue;
+            }
+            if (empty($transferData['call_id'])) {
+                continue;
+            }
+            $historyLinkedid = $transferData['linkedid'] ?? null;
+            if ($historyLinkedid && $historyLinkedid === $linkedid) {
+                $call_id = $transferData['call_id'];
+                break;
+            }
         }
     }
     if (!$call_id) {
@@ -288,11 +321,22 @@ function callme_show_cards_for_ringing($linkedid, $helper, $globalsObj)
         }
         if ($call_id) {
             $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+            $globalsObj->callsByCallId[$call_id] = $linkedid;
+        }
+    }
+    if (!$call_id) {
+        foreach ($globalsObj->calls as $uniqueid => $candidateCallId) {
+            if (($globalsObj->uniqueidToLinkedid[$uniqueid] ?? null) === $linkedid) {
+                $call_id = $candidateCallId;
+                break;
+            }
         }
     }
     if (!$call_id) {
         return;
     }
+    $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+    $globalsObj->callsByCallId[$call_id] = $linkedid;
     if (empty($globalsObj->ringingIntNums[$linkedid]) || !is_array($globalsObj->ringingIntNums[$linkedid])) {
         return;
     }
@@ -357,6 +401,8 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
 
     if ($result) {
         $globalsObj->callIdByInt[$intNum] = $call_id;
+        $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+        $globalsObj->callsByCallId[$call_id] = $linkedid;
         if (!isset($globalsObj->callShownCards[$linkedid])) {
             $globalsObj->callShownCards[$linkedid] = array();
         }
@@ -397,6 +443,48 @@ function callme_is_card_marked_shown($linkedid, $intNum, Globals $globalsObj)
         return !empty($entry['shown']);
     }
     return (bool)$entry;
+}
+
+/**
+ * Пытается определить linkedid, связанный с указанным внутренним номером.
+ *
+ * @param string|null $intNum
+ * @param Globals $globalsObj
+ * @param string|null $fallbackLinkedid
+ * @return string|null
+ */
+function callme_find_linkedid_for_int($intNum, Globals $globalsObj, $fallbackLinkedid = null)
+{
+    if ($intNum === null || $intNum === '') {
+        return $fallbackLinkedid;
+    }
+    $intNum = (string)$intNum;
+
+    foreach ($globalsObj->callShownCards as $linkedidCandidate => $cardMap) {
+        if (isset($cardMap[$intNum])) {
+            return $linkedidCandidate;
+        }
+    }
+
+    foreach ($globalsObj->ringingIntNums as $linkedidCandidate => $ringMap) {
+        if (isset($ringMap[$intNum])) {
+            return $linkedidCandidate;
+        }
+    }
+
+    if (isset($globalsObj->callIdByInt[$intNum])) {
+        $callId = $globalsObj->callIdByInt[$intNum];
+        if ($callId !== '' && isset($globalsObj->callsByCallId[$callId])) {
+            return $globalsObj->callsByCallId[$callId];
+        }
+        foreach ($globalsObj->callIdByLinkedid as $linkedidCandidate => $storedCallId) {
+            if ($storedCallId === $callId) {
+                return $linkedidCandidate;
+            }
+        }
+    }
+
+    return $fallbackLinkedid;
 }
 
 /**
@@ -498,6 +586,267 @@ function callme_hide_cards_batch($linkedid, $call_id, HelperFuncs $helper, Globa
 }
 
 /**
+ * Переносит карточку звонка между внутренними номерами (attended/blind transfer, очередь).
+ *
+ * @param string $linkedid
+ * @param string $callId
+ * @param string|null $fromIntNum
+ * @param string $toIntNum
+ * @param HelperFuncs $helper
+ * @param Globals $globalsObj
+ * @param array $context
+ * @return void
+ */
+function callme_transfer_move_card($linkedid, $callId, $fromIntNum, $toIntNum, HelperFuncs $helper, Globals $globalsObj, array $context = array())
+{
+    if ($callId === '' || $toIntNum === '') {
+        return;
+    }
+
+    $toIntNum = (string)$toIntNum;
+    $fromIntNum = $fromIntNum !== null ? (string)$fromIntNum : null;
+    $fallbackLinkedid = $linkedid !== '' ? $linkedid : ($globalsObj->callsByCallId[$callId] ?? null);
+
+    $targetLinkedid = callme_find_linkedid_for_int($toIntNum, $globalsObj, $fallbackLinkedid);
+    $sourceLinkedid = $fallbackLinkedid;
+
+    if ($fromIntNum !== null && $fromIntNum !== '' && $fromIntNum !== $toIntNum) {
+        $sourceLinkedid = callme_find_linkedid_for_int($fromIntNum, $globalsObj, $fallbackLinkedid);
+        $helper->hideInputCall($fromIntNum, $callId);
+
+        if ($sourceLinkedid && isset($globalsObj->callShownCards[$sourceLinkedid][$fromIntNum])) {
+            unset($globalsObj->callShownCards[$sourceLinkedid][$fromIntNum]);
+            if (empty($globalsObj->callShownCards[$sourceLinkedid])) {
+                unset($globalsObj->callShownCards[$sourceLinkedid]);
+            }
+        }
+
+        if ($sourceLinkedid && isset($globalsObj->ringingIntNums[$sourceLinkedid][$fromIntNum])) {
+            $globalsObj->ringingIntNums[$sourceLinkedid][$fromIntNum]['shown'] = false;
+            $globalsObj->ringingIntNums[$sourceLinkedid][$fromIntNum]['state'] = 'TRANSFERRED';
+        }
+
+        if ($sourceLinkedid && isset($globalsObj->ringOrder[$sourceLinkedid])) {
+            $globalsObj->ringOrder[$sourceLinkedid] = array_values(array_filter(
+                $globalsObj->ringOrder[$sourceLinkedid],
+                function ($value) use ($fromIntNum) {
+                    return (string)$value !== (string)$fromIntNum;
+                }
+            ));
+            if (empty($globalsObj->ringOrder[$sourceLinkedid])) {
+                unset($globalsObj->ringOrder[$sourceLinkedid]);
+            }
+        }
+
+        if (isset($globalsObj->callIdByInt[$fromIntNum]) && $globalsObj->callIdByInt[$fromIntNum] === $callId) {
+            unset($globalsObj->callIdByInt[$fromIntNum]);
+        }
+    }
+
+    if (!$targetLinkedid) {
+        $targetLinkedid = $sourceLinkedid ?: $fallbackLinkedid;
+    }
+    if (!$targetLinkedid) {
+        return;
+    }
+
+    if (!isset($globalsObj->ringOrder[$targetLinkedid])) {
+        $globalsObj->ringOrder[$targetLinkedid] = array();
+    }
+    if (!in_array($toIntNum, $globalsObj->ringOrder[$targetLinkedid], true)) {
+        $globalsObj->ringOrder[$targetLinkedid][] = $toIntNum;
+    }
+
+    if (!isset($globalsObj->ringingIntNums[$targetLinkedid])) {
+        $globalsObj->ringingIntNums[$targetLinkedid] = array();
+    }
+    if (!isset($globalsObj->ringingIntNums[$targetLinkedid][$toIntNum])) {
+        $globalsObj->ringingIntNums[$targetLinkedid][$toIntNum] = array();
+    }
+
+    $globalsObj->ringingIntNums[$targetLinkedid][$toIntNum]['state'] = 'TRANSFER';
+    $globalsObj->ringingIntNums[$targetLinkedid][$toIntNum]['timestamp'] = time();
+
+    $userId = $globalsObj->ringingIntNums[$targetLinkedid][$toIntNum]['user_id'] ?? $helper->getUSER_IDByIntNum($toIntNum);
+    if ($userId) {
+        $globalsObj->ringingIntNums[$targetLinkedid][$toIntNum]['user_id'] = $userId;
+    }
+
+    $globalsObj->callIdByLinkedid[$targetLinkedid] = $callId;
+    $globalsObj->callsByCallId[$callId] = $targetLinkedid;
+    $globalsObj->callIdByInt[$toIntNum] = $callId;
+
+    callme_show_card_for_int($targetLinkedid, $toIntNum, $helper, $globalsObj);
+
+    if (!empty($context)) {
+        $helper->writeToLog(array_merge($context, array(
+            'linkedid' => $targetLinkedid,
+            'sourceLinkedid' => $sourceLinkedid,
+            'call_id' => $callId,
+            'fromIntNum' => $fromIntNum,
+            'toIntNum' => $toIntNum,
+        )), 'TRANSFER: Card moved');
+    }
+}
+
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        if (!($event instanceof BridgeEvent) || $event->getBridgeState() !== 'Link') {
+            return;
+        }
+
+        if ($helper->isInternalToInternalBridge($event)) {
+            return;
+        }
+
+        if (!$helper->isExternalToInternalBridge($event)) {
+            return;
+        }
+
+        $bridgeData = $helper->extractBridgeData($event);
+        if (!$bridgeData) {
+            return;
+        }
+
+        $externalUniqueid = $bridgeData['externalUniqueid'] ?? null;
+        $originalExternalUniqueid = $externalUniqueid;
+        $externalChannel = $bridgeData['externalChannel'] ?? null;
+        $internalUniqueid = $bridgeData['internalUniqueid'] ?? null;
+        $internalChannel = $bridgeData['internalChannel'] ?? null;
+        $internalCallerID = $bridgeData['internalCallerID'] ?? '';
+
+        if (!$externalUniqueid) {
+            return;
+        }
+
+        $newIntNum = callme_extract_internal_number($internalCallerID, $internalChannel);
+        if (!$newIntNum) {
+            $newIntNum = substr(preg_replace('/\D+/', '', (string)$internalCallerID), 0, 4);
+        }
+        if (!$newIntNum) {
+            return;
+        }
+
+        $callId = $globalsObj->calls[$externalUniqueid] ?? null;
+        $externalLinkedid = $globalsObj->uniqueidToLinkedid[$externalUniqueid] ?? null;
+        $internalLinkedid = $internalUniqueid ? ($globalsObj->uniqueidToLinkedid[$internalUniqueid] ?? null) : null;
+        $linkedid = $internalLinkedid ?? $externalLinkedid;
+
+        if (!$callId && $linkedid && isset($globalsObj->callIdByLinkedid[$linkedid])) {
+            $callId = $globalsObj->callIdByLinkedid[$linkedid];
+        }
+        if (!$callId && $linkedid && isset($globalsObj->calls[$linkedid])) {
+            $callId = $globalsObj->calls[$linkedid];
+        }
+        if (!$callId && $linkedid && isset($globalsObj->callsByCallId)) {
+            foreach ($globalsObj->callsByCallId as $storedCallId => $storedLinkedid) {
+                if ($storedLinkedid === $linkedid) {
+                    $callId = $storedCallId;
+                    break;
+                }
+            }
+        }
+        if (!$callId && $externalLinkedid && isset($globalsObj->callIdByLinkedid[$externalLinkedid])) {
+            $callId = $globalsObj->callIdByLinkedid[$externalLinkedid];
+            if (!$linkedid) {
+                $linkedid = $externalLinkedid;
+            }
+        }
+        if (!$callId && !empty($globalsObj->transferHistory)) {
+            $externalChannelBase = callme_channel_base($externalChannel);
+            foreach ($globalsObj->transferHistory as $historyUniqueid => $transferData) {
+                if (!is_array($transferData)) {
+                    continue;
+                }
+                if (empty($transferData['call_id'])) {
+                    continue;
+                }
+                $historyChannelBase = callme_channel_base($transferData['externalChannel'] ?? '');
+                if ($externalChannelBase === '' || $externalChannelBase !== $historyChannelBase) {
+                    continue;
+                }
+
+                $callId = $transferData['call_id'];
+                $historyLinkedid = $transferData['linkedid'] ?? null;
+                if ($historyLinkedid) {
+                    $linkedid = $historyLinkedid;
+                }
+                $externalUniqueid = $historyUniqueid;
+                break;
+            }
+        }
+        if (!$callId) {
+            return;
+        }
+
+        if (!$linkedid) {
+            $linkedid = $globalsObj->callsByCallId[$callId] ?? ($internalLinkedid ?? $externalUniqueid);
+        }
+
+        $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+        $globalsObj->callsByCallId[$callId] = $linkedid;
+        $globalsObj->calls[$linkedid] = $callId;
+        $globalsObj->calls[$externalUniqueid] = $callId;
+        if ($internalUniqueid) {
+            $globalsObj->calls[$internalUniqueid] = $callId;
+            $globalsObj->uniqueidToLinkedid[$internalUniqueid] = $linkedid;
+        }
+        $globalsObj->uniqueidToLinkedid[$externalUniqueid] = $linkedid;
+        if ($originalExternalUniqueid && $originalExternalUniqueid !== $externalUniqueid) {
+            $globalsObj->calls[$originalExternalUniqueid] = $callId;
+            $globalsObj->uniqueidToLinkedid[$originalExternalUniqueid] = $linkedid;
+        }
+
+        if (!isset($globalsObj->transferHistory[$externalUniqueid])) {
+            $globalsObj->transferHistory[$externalUniqueid] = array(
+                'call_id' => $callId,
+                'externalChannel' => $externalChannel,
+                'currentIntNum' => $newIntNum,
+                'linkedid' => $linkedid,
+                'history' => array(),
+            );
+            $globalsObj->intNums[$externalUniqueid] = $newIntNum;
+
+            callme_transfer_move_card($linkedid, $callId, null, $newIntNum, $helper, $globalsObj, array(
+                'event' => 'BridgeEvent',
+                'type' => 'initial_connection',
+                'externalUniqueid' => $externalUniqueid,
+                'externalChannel' => $externalChannel,
+                'internalUniqueid' => $internalUniqueid,
+            ));
+
+            return;
+        }
+
+        $oldIntNum = $globalsObj->transferHistory[$externalUniqueid]['currentIntNum'] ?? null;
+        $globalsObj->transferHistory[$externalUniqueid]['externalChannel'] = $externalChannel;
+        if ($oldIntNum === $newIntNum) {
+            return;
+        }
+
+        callme_transfer_move_card($linkedid, $callId, $oldIntNum, $newIntNum, $helper, $globalsObj, array(
+            'event' => 'BridgeEvent',
+            'type' => 'transfer',
+            'externalUniqueid' => $externalUniqueid,
+            'externalChannel' => $externalChannel,
+            'internalUniqueid' => $internalUniqueid,
+        ));
+
+        $globalsObj->transferHistory[$externalUniqueid]['currentIntNum'] = $newIntNum;
+        $globalsObj->transferHistory[$externalUniqueid]['linkedid'] = $linkedid;
+        $globalsObj->transferHistory[$externalUniqueid]['history'][] = array(
+            'from' => $oldIntNum,
+            'to' => $newIntNum,
+            'timestamp' => time(),
+        );
+        $globalsObj->intNums[$externalUniqueid] = $newIntNum;
+    },
+    function (EventMessage $event) {
+        return $event instanceof BridgeEvent && $event->getBridgeState() === 'Link';
+    }
+);
+
+/**
  * Обработка пользовательского события начала дозвона по внутреннему номеру.
  *
  * @param EventMessage $event
@@ -520,13 +869,6 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
 
     $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
     $direction = (string) ($event->getKey('Direction') ?? 'inbound');
-    $cardId = trim((string) ($event->getKey('CardId') ?? ''));
-    if ($cardId !== '' && $linkedid !== '') {
-        $globalsObj->cardIdByLinkedid[$linkedid] = $cardId;
-        if (isset($globalsObj->callIdByCardId[$cardId])) {
-            $globalsObj->callIdByLinkedid[$linkedid] = $globalsObj->callIdByCardId[$cardId];
-        }
-    }
 
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
         $globalsObj->ringingIntNums[$linkedid] = array();
@@ -556,16 +898,44 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
         $globalsObj->intNums[$agentUniqueId] = $intNum;
     }
 
-    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
-    if (!$callId && $cardId !== '' && isset($globalsObj->callIdByCardId[$cardId])) {
-        $callId = $globalsObj->callIdByCardId[$cardId];
-        $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->callIdByInt[$intNum] ?? null);
+    if (!$callId && $agentUniqueId !== '' && isset($globalsObj->calls[$agentUniqueId])) {
+        $callId = $globalsObj->calls[$agentUniqueId];
+    }
+    if (!$callId) {
+        $callId = $helper->findCallIdByIntNum($intNum, $globalsObj);
+    }
+    if (!$callId && isset($globalsObj->calls[$linkedid])) {
+        $callId = $globalsObj->calls[$linkedid];
+    }
+    if (!$callId && !empty($globalsObj->transferHistory)) {
+        foreach ($globalsObj->transferHistory as $transferData) {
+            if (!is_array($transferData)) {
+                continue;
+            }
+            if (($transferData['currentIntNum'] ?? null) !== $intNum) {
+                continue;
+            }
+            if (empty($transferData['call_id'])) {
+                continue;
+            }
+
+            $callId = $transferData['call_id'];
+            $historyLinkedid = $transferData['linkedid'] ?? null;
+            if ($historyLinkedid && $historyLinkedid !== $linkedid) {
+                $globalsObj->callIdByLinkedid[$historyLinkedid] = $callId;
+                $globalsObj->callsByCallId[$callId] = $historyLinkedid;
+            }
+            break;
+        }
     }
     if ($callId) {
+        $globalsObj->callIdByLinkedid[$linkedid] = $callId;
         $globalsObj->callIdByInt[$intNum] = $callId;
         if ($agentUniqueId !== '') {
             $globalsObj->calls[$agentUniqueId] = $callId;
         }
+        $globalsObj->callsByCallId[$callId] = $linkedid;
     }
 
     $helper->writeToLog(array(
@@ -630,19 +1000,44 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
         $globalsObj->intNums[$agentUniqueId] = $intNum;
     }
 
-    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
-    if (!$callId && $cardId !== '' && isset($globalsObj->callIdByCardId[$cardId])) {
-        $callId = $globalsObj->callIdByCardId[$cardId];
-        $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->callIdByInt[$intNum] ?? null);
+    if (!$callId && isset($globalsObj->calls[$linkedid])) {
+        $callId = $globalsObj->calls[$linkedid];
+    }
+    if (!$callId && isset($globalsObj->calls[$agentUniqueId])) {
+        $callId = $globalsObj->calls[$agentUniqueId];
+    }
+    if (!$callId) {
+        $callId = $helper->findCallIdByIntNum($intNum, $globalsObj);
+    }
+    if (!$callId && !empty($globalsObj->transferHistory)) {
+        foreach ($globalsObj->transferHistory as $transferData) {
+            if (!is_array($transferData)) {
+                continue;
+            }
+            if (($transferData['currentIntNum'] ?? null) !== $intNum) {
+                continue;
+            }
+            if (empty($transferData['call_id'])) {
+                continue;
+            }
+
+            $callId = $transferData['call_id'];
+            $historyLinkedid = $transferData['linkedid'] ?? null;
+            if ($historyLinkedid && $historyLinkedid !== $linkedid) {
+                $globalsObj->callIdByLinkedid[$historyLinkedid] = $callId;
+                $globalsObj->callsByCallId[$callId] = $historyLinkedid;
+            }
+            break;
+        }
     }
     if ($callId) {
+        $globalsObj->callIdByLinkedid[$linkedid] = $callId;
         $globalsObj->callIdByInt[$intNum] = $callId;
-        if ($cardId !== '') {
-            $globalsObj->callIdByCardId[$cardId] = $callId;
-        }
         if ($agentUniqueId !== '') {
             $globalsObj->calls[$agentUniqueId] = $callId;
         }
+        $globalsObj->callsByCallId[$callId] = $linkedid;
     }
 
     $helper->writeToLog(array(
@@ -713,17 +1108,39 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
     $dialStatus = strtoupper(trim($dialStatusRaw));
     $cleanupOnStop = !in_array($dialStatus, array('ANSWER', 'ANSWERED'), true);
 
-    $cardId = trim((string) ($event->getKey('CardId') ?? ''));
-    if ($cardId !== '') {
-        $globalsObj->cardIdByLinkedid[$linkedid] = $cardId;
-        if (isset($globalsObj->callIdByCardId[$cardId])) {
-            $globalsObj->callIdByLinkedid[$linkedid] = $globalsObj->callIdByCardId[$cardId];
-        }
-    }
-
     $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
-    if (!$callId && $cardId !== '' && isset($globalsObj->callIdByCardId[$cardId])) {
-        $callId = $globalsObj->callIdByCardId[$cardId];
+    if (!$callId && isset($globalsObj->callIdByInt[$intNum])) {
+        $callId = $globalsObj->callIdByInt[$intNum];
+    }
+    if (!$callId && isset($globalsObj->calls[$linkedid])) {
+        $callId = $globalsObj->calls[$linkedid];
+    }
+    if (!$callId && isset($globalsObj->calls[$intNum])) {
+        $callId = $globalsObj->calls[$intNum];
+    }
+    if (!$callId) {
+        $callId = $helper->findCallIdByIntNum($intNum, $globalsObj);
+    }
+    if (!$callId && !empty($globalsObj->transferHistory)) {
+        foreach ($globalsObj->transferHistory as $transferData) {
+            if (!is_array($transferData)) {
+                continue;
+            }
+            if (($transferData['currentIntNum'] ?? null) !== $intNum) {
+                continue;
+            }
+            if (empty($transferData['call_id'])) {
+                continue;
+            }
+
+            $callId = $transferData['call_id'];
+            $historyLinkedid = $transferData['linkedid'] ?? null;
+            if ($historyLinkedid && $historyLinkedid !== $linkedid) {
+                $globalsObj->callIdByLinkedid[$historyLinkedid] = $callId;
+                $globalsObj->callsByCallId[$callId] = $historyLinkedid;
+            }
+            break;
+        }
     }
 
     if ($callId && callme_is_card_marked_shown($linkedid, $intNum, $globalsObj) && $cleanupOnStop) {
@@ -766,12 +1183,6 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
         if (isset($globalsObj->callIdByInt[$intNum])) {
             unset($globalsObj->callIdByInt[$intNum]);
         }
-        if ($cardId !== '') {
-            unset($globalsObj->callIdByCardId[$cardId]);
-            if (isset($globalsObj->cardIdByLinkedid[$linkedid]) && $globalsObj->cardIdByLinkedid[$linkedid] === $cardId) {
-                unset($globalsObj->cardIdByLinkedid[$linkedid]);
-            }
-        }
     } else {
         if (!isset($globalsObj->ringingIntNums[$linkedid])) {
             $globalsObj->ringingIntNums[$linkedid] = array();
@@ -792,73 +1203,6 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
         'agentUniqueid' => $agentUniqueId,
         'cleanupOnStop' => $cleanupOnStop,
     ), 'UserEvent CallMeRingingStop');
-}
-
-/**
- * Обработка пользовательского события завершения карточки (CALLME_CARD_STATE финал).
- *
- * @param EventMessage $event
- * @param HelperFuncs $helper
- * @param Globals $globalsObj
- * @return void
- */
-function callme_handle_user_event_card_finish(EventMessage $event, HelperFuncs $helper, Globals $globalsObj)
-{
-    $linkedid = trim((string) ($event->getKey('Linkedid') ?? $event->getKey('LinkedID') ?? ''));
-    $cardId = trim((string) ($event->getKey('CardId') ?? ''));
-    $intNum = trim((string) ($event->getKey('Target') ?? ''));
-    $agentUniqueId = trim((string) ($event->getKey('AgentUniqueid') ?? ''));
-
-    if ($linkedid === '' && $cardId !== '') {
-        $linkedidLookup = array_search($cardId, $globalsObj->cardIdByLinkedid, true);
-        if ($linkedidLookup !== false) {
-            $linkedid = $linkedidLookup;
-        }
-    }
-
-    if ($cardId !== '' && $linkedid !== '') {
-        $globalsObj->cardIdByLinkedid[$linkedid] = $cardId;
-    }
-
-    $callId = null;
-    if ($cardId !== '' && isset($globalsObj->callIdByCardId[$cardId])) {
-        $callId = $globalsObj->callIdByCardId[$cardId];
-    }
-    if (!$callId && $linkedid !== '') {
-        $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
-    }
-    if (!$callId && $intNum !== '') {
-        $callId = $globalsObj->callIdByInt[$intNum] ?? null;
-    }
-
-    if ($callId && $intNum !== '') {
-        $helper->hideInputCall($intNum, $callId);
-    }
-
-    if ($linkedid !== '' && isset($globalsObj->callShownCards[$linkedid][$intNum])) {
-        unset($globalsObj->callShownCards[$linkedid][$intNum]);
-        if (empty($globalsObj->callShownCards[$linkedid])) {
-            unset($globalsObj->callShownCards[$linkedid]);
-        }
-    }
-    if ($intNum !== '' && isset($globalsObj->callIdByInt[$intNum]) && $callId !== null && $globalsObj->callIdByInt[$intNum] === $callId) {
-        unset($globalsObj->callIdByInt[$intNum]);
-    }
-
-    if ($agentUniqueId !== '') {
-        unset($globalsObj->uniqueidToLinkedid[$agentUniqueId]);
-        unset($globalsObj->intNums[$agentUniqueId]);
-        unset($globalsObj->calls[$agentUniqueId]);
-    }
-
-    $helper->writeToLog(array(
-        'event' => 'CallMeCardFinish',
-        'linkedid' => $linkedid,
-        'cardId' => $cardId,
-        'intNum' => $intNum,
-        'call_id' => $callId,
-        'agentUniqueid' => $agentUniqueId,
-    ), 'UserEvent CallMeCardFinish');
 }
 
 /**
@@ -968,11 +1312,6 @@ function callme_handle_dial_begin_common(
 
     $normalizedCaller = callme_normalize_phone($callerNumberRaw);
 
-    $cardId = $globalsObj->cardIdByLinkedid[$linkedid] ?? null;
-    if ($cardId && isset($globalsObj->callIdByCardId[$cardId])) {
-        $globalsObj->callIdByLinkedid[$linkedid] = $globalsObj->callIdByCardId[$cardId];
-    }
-
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
         $globalsObj->ringingIntNums[$linkedid] = array();
     }
@@ -1032,14 +1371,12 @@ function callme_handle_dial_begin_common(
         if (!empty($destUniqueId)) {
             $globalsObj->calls[$destUniqueId] = $call_id;
         }
-        if (!empty($cardId)) {
-            $globalsObj->callIdByCardId[$cardId] = $call_id;
-        }
         $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
         $globalsObj->callIdByInt[$exten] = $call_id;
         if (!isset($globalsObj->callIdByInt[$linkedidOriginal])) {
             $globalsObj->callIdByInt[$linkedidOriginal] = $call_id;
         }
+        $globalsObj->callsByCallId[$call_id] = $linkedid;
     } else {
         $helper->writeToLog(array(
             'linkedid' => $linkedid,
@@ -1300,8 +1637,7 @@ $pamiClient->registerEventListener(
                     $call_id = $callResult['CALL_ID'];
                     $globalsObj->calls[$callLinkedid] = $call_id;
                     $globalsObj->callIdByLinkedid[$callLinkedid] = $call_id;
-                    $globalsObj->cardIdByLinkedid[$callLinkedid] = $callLinkedid;
-                    $globalsObj->callIdByCardId[$callLinkedid] = $call_id;
+                    $globalsObj->callsByCallId[$call_id] = $callLinkedid;
                     $globalsObj->uniqueidToLinkedid[$callLinkedid] = $callLinkedid;
                     $globalsObj->intNums[$callLinkedid] = $registerIntNum;
                     if ($registerIntNum) {
@@ -1445,9 +1781,6 @@ $pamiClient->registerEventListener(
             case 'CallMeRingingStop':
                 callme_handle_user_event_ringing_stop($event, $helper, $globalsObj);
                 break;
-            case 'CallMeCardFinish':
-                callme_handle_user_event_card_finish($event, $helper, $globalsObj);
-                break;
             default:
                 break;
         }
@@ -1457,7 +1790,7 @@ $pamiClient->registerEventListener(
             return false;
         }
         $userEventName = (string) ($event->getKey('UserEvent') ?? '');
-        return in_array($userEventName, array('CallMeRingingStart', 'CallMeRingingAnswer', 'CallMeRingingStop', 'CallMeCardFinish'), true);
+        return in_array($userEventName, array('CallMeRingingStart', 'CallMeRingingAnswer', 'CallMeRingingStop'), true);
     }
 );
 
@@ -1474,7 +1807,66 @@ $pamiClient->registerEventListener(
         $linkedidFromEvent = $event->getKey("Linkedid");
         $linkedid = $linkedidFromEvent ?: ($globalsObj->uniqueidToLinkedid[$callUniqueid] ?? null);
 
-        if ($variableName === 'CALLME_CARD_STATE') {
+        if ($variableName === 'BRIDGEPEER') {
+            $channel = (string)$event->getChannel();
+            $bridgedPeer = (string)$event->getValue();
+            if (strpos($channel, 'SIP/') !== 0) {
+                return;
+            }
+
+            $intNum = null;
+            if (preg_match('/SIP\/(\d+)-/', $channel, $matches)) {
+                $intNum = substr($matches[1], 0, 4);
+            }
+            if (!$intNum) {
+                $intNum = callme_extract_internal_number($channel);
+            }
+            if (!$intNum) {
+                return;
+            }
+
+            foreach ($globalsObj->transferHistory as $externalUniqueid => $transferData) {
+                $callId = $transferData['call_id'] ?? ($globalsObj->calls[$externalUniqueid] ?? null);
+                if (!$callId) {
+                    continue;
+                }
+
+                $externalChannel = $transferData['externalChannel'] ?? '';
+                $externalChannelBase = preg_replace('/-[^-]+$/', '', (string)$externalChannel);
+                $bridgedPeerBase = preg_replace('/-[^-]+$/', '', $bridgedPeer);
+                if ($externalChannelBase !== $bridgedPeerBase && $externalChannel !== $bridgedPeer) {
+                    continue;
+                }
+
+                $linkedidForTransfer = $globalsObj->uniqueidToLinkedid[$externalUniqueid] ?? ($globalsObj->callsByCallId[$callId] ?? ($linkedid ?: $externalUniqueid));
+
+                $oldIntNum = $transferData['currentIntNum'] ?? null;
+                if ($oldIntNum === $intNum) {
+                    continue;
+                }
+
+                callme_transfer_move_card($linkedidForTransfer, $callId, $oldIntNum, $intNum, $helper, $globalsObj, array(
+                    'event' => 'VarSetEvent',
+                    'variable' => 'BRIDGEPEER',
+                    'externalUniqueid' => $externalUniqueid,
+                    'externalChannel' => $externalChannel,
+                    'channel' => $channel,
+                    'bridgedPeer' => $bridgedPeer,
+                ));
+
+                $globalsObj->transferHistory[$externalUniqueid]['currentIntNum'] = $intNum;
+                $globalsObj->transferHistory[$externalUniqueid]['linkedid'] = $linkedidForTransfer;
+                $globalsObj->transferHistory[$externalUniqueid]['history'][] = array(
+                    'from' => $oldIntNum,
+                    'to' => $intNum,
+                    'timestamp' => time(),
+                );
+                $globalsObj->intNums[$externalUniqueid] = $intNum;
+                return;
+            }
+
+            return;
+        } elseif ($variableName === 'CALLME_CARD_STATE') {
             $payload = trim((string)$rawValue);
             if ($payload === '') {
                 $helper->writeToLog(array(
@@ -1516,19 +1908,6 @@ $pamiClient->registerEventListener(
             }
 
             $callId = $linkedid ? ($globalsObj->callIdByLinkedid[$linkedid] ?? null) : null;
-            $cardId = null;
-            if ($linkedid && isset($globalsObj->cardIdByLinkedid[$linkedid])) {
-                $cardId = $globalsObj->cardIdByLinkedid[$linkedid];
-            } elseif ($callUniqueid && isset($globalsObj->cardIdByLinkedid[$callUniqueid])) {
-                $cardId = $globalsObj->cardIdByLinkedid[$callUniqueid];
-                $linkedid = $linkedid ?: $callUniqueid;
-            }
-            if (!$callId && $cardId && isset($globalsObj->callIdByCardId[$cardId])) {
-                $callId = $globalsObj->callIdByCardId[$cardId];
-                if ($linkedid) {
-                    $globalsObj->callIdByLinkedid[$linkedid] = $callId;
-                }
-            }
             if (!$callId && isset($globalsObj->callIdByInt[$intNum])) {
                 $callId = $globalsObj->callIdByInt[$intNum];
                 if (!$linkedid) {
@@ -1537,6 +1916,47 @@ $pamiClient->registerEventListener(
                         $linkedid = $foundLinkedid;
                     }
                 }
+            }
+            if (!$callId && $callUniqueid && isset($globalsObj->calls[$callUniqueid])) {
+                $callId = $globalsObj->calls[$callUniqueid];
+                if ($linkedid) {
+                    $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+                }
+            }
+            if (!$callId && $linkedid && isset($globalsObj->calls[$linkedid])) {
+                $callId = $globalsObj->calls[$linkedid];
+            }
+            if (!$callId) {
+                $callId = $helper->findCallIdByIntNum($intNum, $globalsObj);
+            }
+            if (!$callId && !empty($globalsObj->transferHistory)) {
+                foreach ($globalsObj->transferHistory as $transferData) {
+                    if (!is_array($transferData)) {
+                        continue;
+                    }
+                    if (($transferData['currentIntNum'] ?? null) !== $intNum) {
+                        continue;
+                    }
+                    if (empty($transferData['call_id'])) {
+                        continue;
+                    }
+
+                    $callId = $transferData['call_id'];
+                    $historyLinkedid = $transferData['linkedid'] ?? null;
+                    if ($historyLinkedid && !$linkedid) {
+                        $linkedid = $historyLinkedid;
+                    }
+                    if ($historyLinkedid) {
+                        $globalsObj->callIdByLinkedid[$historyLinkedid] = $callId;
+                        $globalsObj->callsByCallId[$callId] = $historyLinkedid;
+                    }
+                    break;
+                }
+            }
+
+            $resolvedLinkedid = callme_find_linkedid_for_int($intNum, $globalsObj, $linkedid);
+            if ($resolvedLinkedid) {
+                $linkedid = $resolvedLinkedid;
             }
 
             if (!$callId) {
@@ -1554,10 +1974,7 @@ $pamiClient->registerEventListener(
             if ($state === 'SHOW') {
                 if ($linkedid) {
                     $globalsObj->callIdByLinkedid[$linkedid] = $callId;
-                    if ($cardId) {
-                        $globalsObj->cardIdByLinkedid[$linkedid] = $cardId;
-                        $globalsObj->callIdByCardId[$cardId] = $callId;
-                    }
+                    $globalsObj->callsByCallId[$callId] = $linkedid;
                     $globalsObj->callIdByInt[$intNum] = $callId;
                     callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj);
                 } else {
@@ -2089,19 +2506,23 @@ $pamiClient->registerEventListener(
                 $helper->removeItemFromArray($globalsObj->Onhold,$event->getChannel(),'key');
                 if ($linkedid && isset($globalsObj->callIdByLinkedid[$linkedid])) {
                     unset($globalsObj->callIdByLinkedid[$linkedid]);
-                    if (isset($globalsObj->cardIdByLinkedid[$linkedid])) {
-                        $cardIdToCleanup = $globalsObj->cardIdByLinkedid[$linkedid];
-                        unset($globalsObj->cardIdByLinkedid[$linkedid]);
-                        if ($cardIdToCleanup !== '' && isset($globalsObj->callIdByCardId[$cardIdToCleanup])) {
-                            unset($globalsObj->callIdByCardId[$cardIdToCleanup]);
-                        }
-                    }
+                }
+                if ($call_id && isset($globalsObj->callsByCallId[$call_id])) {
+                    unset($globalsObj->callsByCallId[$call_id]);
                 }
                 if ($linkedid && isset($globalsObj->callCrmData[$linkedid])) {
                     unset($globalsObj->callCrmData[$linkedid]);
                 }
                 if ($linkedid && isset($globalsObj->callDirections[$linkedid])) {
                     unset($globalsObj->callDirections[$linkedid]);
+                }
+                if (isset($globalsObj->transferHistory[$callLinkedid])) {
+                    unset($globalsObj->transferHistory[$callLinkedid]);
+                }
+                foreach ($globalsObj->transferHistory as $transferUniqueid => $transferData) {
+                    if (($transferData['call_id'] ?? null) === $call_id) {
+                        unset($globalsObj->transferHistory[$transferUniqueid]);
+                    }
                 }
                 
                 // Очищаем маппинг linkedid если он был создан для обычного звонка

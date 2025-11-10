@@ -51,8 +51,6 @@ class HelperFuncs {
 	    }
         return false;
 
-	}
-
 	/**
 	 * Get USER_ID by Internal number.
 	 *
@@ -1173,6 +1171,16 @@ class HelperFuncs {
 				return $call_id;
 			}
 		}
+		if (!empty($globalsObj->transferHistory) && is_array($globalsObj->transferHistory)) {
+			foreach ($globalsObj->transferHistory as $transferData) {
+				if (!is_array($transferData)) {
+					continue;
+				}
+				if (($transferData['currentIntNum'] ?? null) == $intNum && !empty($transferData['call_id'])) {
+					return $transferData['call_id'];
+				}
+			}
+		}
 		return null;
 	}
 
@@ -1275,6 +1283,99 @@ class HelperFuncs {
 
 		self::$roiSourceCache = $map;
 		return self::$roiSourceCache;
+	}
+
+	/**
+	 * Проверяет, соединяет ли BridgeEvent внешний канал с внутренним абонентом.
+	 *
+	 * @param \PAMI\Message\Event\BridgeEvent $bridgeEvent
+	 * @return bool
+	 */
+	public function isExternalToInternalBridge($bridgeEvent) {
+		$callerID1 = $bridgeEvent->getCallerID1();
+		$callerID2 = $bridgeEvent->getCallerID2();
+		$channel1 = $bridgeEvent->getChannel1();
+		$channel2 = $bridgeEvent->getChannel2();
+
+		$callerID1Length = strlen(preg_replace('/\D/', '', (string)$callerID1));
+		$callerID2Length = strlen(preg_replace('/\D/', '', (string)$callerID2));
+
+		$isChannel1External = (strpos((string)$channel1, 'IAX2') !== false) ||
+			(strpos((string)$channel1, 'SIP/') !== false && $callerID1Length >= 6) ||
+			(strpos((string)$channel1, 'Local/') !== false && $callerID1Length >= 6);
+
+		$isChannel2External = (strpos((string)$channel2, 'IAX2') !== false) ||
+			(strpos((string)$channel2, 'SIP/') !== false && $callerID2Length >= 6) ||
+			(strpos((string)$channel2, 'Local/') !== false && $callerID2Length >= 6);
+
+		return ($isChannel1External && !$isChannel2External && $callerID2Length <= 4)
+			|| (!$isChannel1External && $isChannel2External && $callerID1Length <= 4);
+	}
+
+	/**
+	 * Проверяет, соединяет ли BridgeEvent два внутренних канала.
+	 *
+	 * @param \PAMI\Message\Event\BridgeEvent $bridgeEvent
+	 * @return bool
+	 */
+	public function isInternalToInternalBridge($bridgeEvent) {
+		$callerID1 = $bridgeEvent->getCallerID1();
+		$callerID2 = $bridgeEvent->getCallerID2();
+
+		$callerID1Length = strlen(preg_replace('/\D/', '', (string)$callerID1));
+		$callerID2Length = strlen(preg_replace('/\D/', '', (string)$callerID2));
+
+		return $callerID1Length <= 4 && $callerID2Length <= 4;
+	}
+
+	/**
+	 * Извлекает полезные данные из BridgeEvent для отслеживания transfer.
+	 *
+	 * @param \PAMI\Message\Event\BridgeEvent $bridgeEvent
+	 * @return array|null
+	 */
+	public function extractBridgeData($bridgeEvent) {
+		$callerID1 = $bridgeEvent->getCallerID1();
+		$callerID2 = $bridgeEvent->getCallerID2();
+		$channel1 = $bridgeEvent->getChannel1();
+		$channel2 = $bridgeEvent->getChannel2();
+		$uniqueID1 = $bridgeEvent->getUniqueID1();
+		$uniqueID2 = $bridgeEvent->getUniqueID2();
+
+		$callerID1Length = strlen(preg_replace('/\D/', '', (string)$callerID1));
+		$callerID2Length = strlen(preg_replace('/\D/', '', (string)$callerID2));
+
+		$isChannel1External = (strpos((string)$channel1, 'IAX2') !== false) ||
+			(strpos((string)$channel1, 'SIP/') !== false && $callerID1Length >= 6) ||
+			(strpos((string)$channel1, 'Local/') !== false && $callerID1Length >= 6);
+
+		if ($isChannel1External && $callerID2Length <= 4) {
+			return array(
+				'externalChannel' => $channel1,
+				'externalUniqueid' => $uniqueID1,
+				'externalCallerID' => $callerID1,
+				'internalChannel' => $channel2,
+				'internalUniqueid' => $uniqueID2,
+				'internalCallerID' => $callerID2,
+			);
+		}
+
+		$isChannel2External = (strpos((string)$channel2, 'IAX2') !== false) ||
+			(strpos((string)$channel2, 'SIP/') !== false && $callerID2Length >= 6) ||
+			(strpos((string)$channel2, 'Local/') !== false && $callerID2Length >= 6);
+
+		if ($isChannel2External && $callerID1Length <= 4) {
+			return array(
+				'externalChannel' => $channel2,
+				'externalUniqueid' => $uniqueID2,
+				'externalCallerID' => $callerID2,
+				'internalChannel' => $channel1,
+				'internalUniqueid' => $uniqueID1,
+				'internalCallerID' => $callerID1,
+			);
+		}
+
+		return null;
 	}
 
 }
