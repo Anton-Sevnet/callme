@@ -50,6 +50,7 @@ class HelperFuncs {
 	        return $intNum;
 	    }
         return false;
+    }
 
 	/**
 	 * Get USER_ID by Internal number.
