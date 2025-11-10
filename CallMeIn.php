@@ -2042,18 +2042,19 @@ $pamiClient->registerEventListener(
         echo "\n-------------------------------------------------------------------\n\r";
         echo "\n\r";
         },function (EventMessage $event) use ($globalsObj) {
-            return
-                $event instanceof VarSetEvent
-                && (
-                    $event->getVariableName() === 'CALLME_CARD_STATE'
-                    || (
-                        ($event->getVariableName() === 'CallMeFULLFNAME'
-                            || $event->getVariableName() === 'DIALSTATUS'
-                            || $event->getVariableName()  === 'CallMeDURATION'
-                            || $event->getVariableName()  === 'ANSWER')
-                        && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids)
-                    )
-                );
+        return
+            $event instanceof VarSetEvent
+            && (
+                $event->getVariableName() === 'CALLME_CARD_STATE'
+                || $event->getVariableName() === 'BRIDGEPEER'
+                || (
+                    ($event->getVariableName() === 'CallMeFULLFNAME'
+                        || $event->getVariableName() === 'DIALSTATUS'
+                        || $event->getVariableName()  === 'CallMeDURATION'
+                        || $event->getVariableName()  === 'ANSWER')
+                    && in_array($event->getKey("Uniqueid"), $globalsObj->uniqueids)
+                )
+            );
         }
 );
 
