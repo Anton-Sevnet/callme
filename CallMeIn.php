@@ -995,6 +995,14 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
     $entry['timestamp'] = time();
     $entry['answered'] = true;
 
+    if ($linkedid !== '') {
+        $globalsObj->answeredCalls[$linkedid] = true;
+        $globalsObj->Dispositions[$linkedid] = 'ANSWERED';
+    }
+    if ($agentUniqueId !== '') {
+        $globalsObj->Dispositions[$agentUniqueId] = 'ANSWERED';
+    }
+
     if ($agentUniqueId !== '') {
         $globalsObj->uniqueidToLinkedid[$agentUniqueId] = $linkedid;
         $globalsObj->intNums[$agentUniqueId] = $intNum;
@@ -1467,6 +1475,11 @@ function callme_handle_dial_end_common(
 
     switch ($event->getDialStatus()) {
         case 'ANSWER':
+            if ($linkedid) {
+                $globalsObj->answeredCalls[$linkedid] = true;
+                $globalsObj->Dispositions[$callLinkedid] = 'ANSWERED';
+                $globalsObj->Dispositions[$linkedid] = 'ANSWERED';
+            }
             if ($linkedid && isset($globalsObj->ringingIntNums[$linkedid][$currentIntNum])) {
                 $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['state'] = 'ANSWER';
                 $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['timestamp'] = time();
@@ -1597,6 +1610,7 @@ $pamiClient->registerEventListener(
                 //добавляем звонок в массив, для обработки в других ивентах
                 $globalsObj->uniqueids[] = $callLinkedid;
                 $globalsObj->Dispositions[$callLinkedid] = 'NO ANSWER';
+                unset($globalsObj->answeredCalls[$callLinkedid]);
                 $globalsObj->callDirections[$callLinkedid] = 'inbound';
                 //берем Exten из ивента
 
@@ -1728,6 +1742,7 @@ $pamiClient->registerEventListener(
 
                 $globalsObj->Durations[$callLinkedid] = 0;
                 $globalsObj->Dispositions[$callLinkedid] = "NO ANSWER";
+                unset($globalsObj->answeredCalls[$callLinkedid]);
                 echo "\n-------------------------------------------------------------------\n\r";
                 echo "\n\r";
 
@@ -1797,6 +1812,7 @@ $pamiClient->registerEventListener(
         $globalsObj->Dispositions[$callLinkedid] = 'NO ANSWER';
         $globalsObj->intNums[$callLinkedid] = $intNum;
         $globalsObj->Durations[$callLinkedid] = 0;
+        unset($globalsObj->answeredCalls[$callLinkedid]);
         echo "-------------------------------------------------------------------\n\r";
         echo "\n\r";
 
@@ -2075,10 +2091,17 @@ $pamiClient->registerEventListener(
             $globalsObj->FullFnameUrls[$callUniqueid] = "http://195.98.170.206/continuous/" . $relativePath;
         }
 
+        $callLinkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid] ?? $callUniqueid;
+        $isAnswered = $callLinkedid && !empty($globalsObj->answeredCalls[$callLinkedid]);
+
         if (($variableName === 'ANSWER' || $variableName === 'DIALSTATUS')
             && strlen($rawValue) > 1) {
             $globalsObj->Dispositions[$callUniqueid] = "ANSWERED";
-        } elseif ($variableName === 'ANSWER' && strlen($rawValue) == 0) {
+            if ($callLinkedid) {
+                $globalsObj->Dispositions[$callLinkedid] = "ANSWERED";
+                $globalsObj->answeredCalls[$callLinkedid] = true;
+            }
+        } elseif ($variableName === 'ANSWER' && strlen($rawValue) == 0 && !$isAnswered) {
             $globalsObj->Dispositions[$callUniqueid] = "NO ANSWER";
         }
 
@@ -2086,7 +2109,18 @@ $pamiClient->registerEventListener(
             $globalsObj->Durations[$callUniqueid] = $rawValue;
         }
         if (preg_match('/^[A-Z\ ]+$/', $rawValue)) {
-            $globalsObj->Dispositions[$callUniqueid] = $rawValue;
+            $upperValue = strtoupper($rawValue);
+            if ($isAnswered && $upperValue !== 'ANSWERED') {
+                // игнорируем статусы, противоречащие факту ответа
+            } else {
+                $globalsObj->Dispositions[$callUniqueid] = $upperValue;
+                if ($callLinkedid) {
+                    $globalsObj->Dispositions[$callLinkedid] = $upperValue;
+                }
+                if ($upperValue === 'ANSWERED' && $callLinkedid) {
+                    $globalsObj->answeredCalls[$callLinkedid] = true;
+                }
+            }
         }
 
         $helper->writeToLog(array('FullFnameUrls'=>$globalsObj->FullFnameUrls,
@@ -2419,7 +2453,13 @@ $pamiClient->registerEventListener(
                         $direction = 'outbound';
                     }
                 }
-                if ($direction === 'inbound' && $CallDisposition === 'CANCEL') {
+                $isAnswered = $linkedid && !empty($globalsObj->answeredCalls[$linkedid]);
+                if ($isAnswered) {
+                    $CallDisposition = 'ANSWERED';
+                    $globalsObj->Dispositions[$callLinkedid] = $CallDisposition;
+                    $globalsObj->Dispositions[$linkedid] = $CallDisposition;
+                }
+                if ($direction === 'inbound' && $CallDisposition === 'CANCEL' && !$isAnswered) {
                     $CallDisposition = 'NO ANSWER';
                     $globalsObj->Dispositions[$callLinkedid] = $CallDisposition;
                 }
@@ -2584,6 +2624,12 @@ $pamiClient->registerEventListener(
                 }
                 if ($linkedid && isset($globalsObj->callDirections[$linkedid])) {
                     unset($globalsObj->callDirections[$linkedid]);
+                }
+                if ($linkedid && isset($globalsObj->answeredCalls[$linkedid])) {
+                    unset($globalsObj->answeredCalls[$linkedid]);
+                }
+                if ($linkedid && isset($globalsObj->Dispositions[$linkedid])) {
+                    unset($globalsObj->Dispositions[$linkedid]);
                 }
                 if (isset($globalsObj->transferHistory[$callLinkedid])) {
                     unset($globalsObj->transferHistory[$callLinkedid]);

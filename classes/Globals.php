@@ -22,6 +22,8 @@ class Globals {
     public $ringingIntNums = array(); // [linkedid => ['100' => ['user_id'=>123, 'shown'=>bool, 'state'=>'RING']]]
     //Порядок появления внутренних номеров в состоянии RING
     public $ringOrder = array(); // [linkedid => ['100','101']]
+    //Флаг отвеченных звонков (ключ — linkedid)
+    public $answeredCalls = array(); // [linkedid => true]
     //Направление звонка: inbound/outbound
     public $callDirections = array(); // [linkedid => 'inbound']
     //Текущий Call ID, закреплённый за внутренними номерами (для быстрого доступа при событиях AMI)
