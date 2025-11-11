@@ -1070,6 +1070,10 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
             }
         }
     }
+
+    if ($linkedid) {
+        $globalsObj->callCrmData[$linkedid]['answer_int_num'] = $intNum;
+    }
     if (isset($globalsObj->ringOrder[$linkedid])) {
         $globalsObj->ringOrder[$linkedid] = array_values(array_filter(
             $globalsObj->ringOrder[$linkedid],
@@ -1247,6 +1251,55 @@ function callme_extract_internal_number(...$sources)
 }
 
 /**
+ * Определяет внутренний номер ответившего оператора.
+ *
+ * @param string|null $linkedid
+ * @param string|null $fallbackInt
+ * @param Globals $globalsObj
+ * @param HelperFuncs $helper
+ * @return string|null
+ */
+function callme_resolve_answer_int($linkedid, $fallbackInt, Globals $globalsObj, HelperFuncs $helper)
+{
+    if ($linkedid && isset($globalsObj->ringingIntNums[$linkedid])) {
+        foreach ($globalsObj->ringingIntNums[$linkedid] as $int => $info) {
+            if (!empty($info['answered'])) {
+                return (string)$int;
+            }
+        }
+    }
+
+    if ($linkedid && isset($globalsObj->callShownCards[$linkedid])) {
+        foreach ($globalsObj->callShownCards[$linkedid] as $int => $cardInfo) {
+            if (!empty($cardInfo['shown'])) {
+                return (string)$int;
+            }
+        }
+    }
+
+    if ($linkedid && isset($globalsObj->transferHistory) && is_array($globalsObj->transferHistory)) {
+        foreach ($globalsObj->transferHistory as $transferData) {
+            if (!is_array($transferData)) {
+                continue;
+            }
+            if (($transferData['linkedid'] ?? null) === $linkedid && !empty($transferData['currentIntNum'])) {
+                return (string)$transferData['currentIntNum'];
+            }
+        }
+    }
+
+    if ($fallbackInt !== null && preg_match('/^\d{2,6}$/', (string)$fallbackInt)) {
+        return (string)$fallbackInt;
+    }
+
+    if ($linkedid && isset($globalsObj->callCrmData[$linkedid]['answer_int_num'])) {
+        return (string)$globalsObj->callCrmData[$linkedid]['answer_int_num'];
+    }
+
+    return null;
+}
+
+/**
  * Общий обработчик начала дозвона по внутреннему номеру.
  *
  * @param EventMessage $event
@@ -1409,7 +1462,8 @@ function callme_handle_dial_end_common(
     $linkedid = $event->getKey("Linkedid") ?: ($globalsObj->uniqueidToLinkedid[$callLinkedid] ?? $callLinkedid);
     $globalsObj->uniqueidToLinkedid[$callLinkedid] = $linkedid;
     $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->calls[$linkedid] ?? ($globalsObj->calls[$callLinkedid] ?? null));
-    $currentIntNum = $globalsObj->intNums[$callLinkedid] ?? null;
+    $rawInt = $globalsObj->intNums[$callLinkedid] ?? null;
+    $currentIntNum = callme_resolve_answer_int($linkedid, $rawInt, $globalsObj, $helper);
 
     switch ($event->getDialStatus()) {
         case 'ANSWER':
@@ -2411,11 +2465,25 @@ $pamiClient->registerEventListener(
                     $primaryTarget = $batchHide['targets'][0];
                 }
 
-                $finishIntNum = $CallIntNum;
+                $finishIntNum = callme_resolve_answer_int($linkedid, $CallIntNum, $globalsObj, $helper);
                 $finishUserId = null;
+                if (!$finishIntNum && isset($globalsObj->transferHistory[$callLinkedid]['currentIntNum'])) {
+                    $finishIntNum = (string)$globalsObj->transferHistory[$callLinkedid]['currentIntNum'];
+                }
+                if (!$finishIntNum && $linkedid && !empty($globalsObj->callCrmData[$linkedid]['answer_int_num'])) {
+                    $finishIntNum = (string)$globalsObj->callCrmData[$linkedid]['answer_int_num'];
+                }
                 if ($primaryTarget) {
                     $finishIntNum = $primaryTarget['int_num'] ?? $finishIntNum;
                     $finishUserId = $primaryTarget['user_id'] ?? null;
+                }
+                if ($finishIntNum) {
+                    $normalizedInt = callme_extract_internal_number($finishIntNum);
+                    if ($normalizedInt) {
+                        $finishIntNum = $normalizedInt;
+                    } elseif (!preg_match('/^\d{2,6}$/', (string)$finishIntNum)) {
+                        $finishIntNum = null;
+                    }
                 }
                 if ($finishIntNum && $finishUserId === null) {
                     $finishUserId = $helper->getUSER_IDByIntNum($finishIntNum);
@@ -2455,7 +2523,7 @@ $pamiClient->registerEventListener(
                     $crmInfo = $globalsObj->callCrmData[$linkedid];
                     $crmEntityType = $crmInfo['entity_type'] ?? null;
                     $crmEntityId = $crmInfo['entity_id'] ?? null;
-                    $finalIntNum = $CallIntNum ?: ($crmInfo['answer_int_num'] ?? null);
+                    $finalIntNum = $finishIntNum ?: ($crmInfo['answer_int_num'] ?? $CallIntNum);
                     $finalUserId = $finalIntNum ? $helper->getUSER_IDByIntNum($finalIntNum) : null;
                     if (!$finalUserId) {
                         $finalUserId = $helper->getFallbackResponsibleUserId();
@@ -2482,7 +2550,7 @@ $pamiClient->registerEventListener(
                     __DIR__,
                     escapeshellarg($call_id),
                     escapeshellarg($FullFname),
-                    escapeshellarg($CallIntNum),
+                    escapeshellarg($finishIntNum ?: $CallIntNum),
                     escapeshellarg($CallDuration),
                     escapeshellarg($CallDisposition)
                 );
