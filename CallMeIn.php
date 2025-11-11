@@ -806,6 +806,15 @@ $pamiClient->registerEventListener(
                 'history' => array(),
             );
             $globalsObj->intNums[$externalUniqueid] = $newIntNum;
+            $answerTimestamp = time();
+            $globalsObj->transferHistory[$externalUniqueid]['answer_timestamp'] = $answerTimestamp;
+            $globalsObj->Dispositions[$externalUniqueid] = 'ANSWER';
+            if (empty($globalsObj->Answers[$externalUniqueid])) {
+                $globalsObj->Answers[$externalUniqueid] = $answerTimestamp;
+            }
+            if ($linkedid) {
+                $globalsObj->callCrmData[$linkedid]['answer_int_num'] = $newIntNum;
+            }
 
             callme_transfer_move_card($linkedid, $callId, null, $newIntNum, $helper, $globalsObj, array(
                 'event' => 'BridgeEvent',
@@ -820,6 +829,10 @@ $pamiClient->registerEventListener(
 
         $oldIntNum = $globalsObj->transferHistory[$externalUniqueid]['currentIntNum'] ?? null;
         $globalsObj->transferHistory[$externalUniqueid]['externalChannel'] = $externalChannel;
+        $globalsObj->transferHistory[$externalUniqueid]['linkedid'] = $linkedid;
+        if (empty($globalsObj->transferHistory[$externalUniqueid]['answer_timestamp'])) {
+            $globalsObj->transferHistory[$externalUniqueid]['answer_timestamp'] = time();
+        }
         if ($oldIntNum === $newIntNum) {
             return;
         }
@@ -833,13 +846,16 @@ $pamiClient->registerEventListener(
         ));
 
         $globalsObj->transferHistory[$externalUniqueid]['currentIntNum'] = $newIntNum;
-        $globalsObj->transferHistory[$externalUniqueid]['linkedid'] = $linkedid;
         $globalsObj->transferHistory[$externalUniqueid]['history'][] = array(
             'from' => $oldIntNum,
             'to' => $newIntNum,
             'timestamp' => time(),
         );
         $globalsObj->intNums[$externalUniqueid] = $newIntNum;
+        $globalsObj->Dispositions[$externalUniqueid] = 'ANSWER';
+        if (empty($globalsObj->Answers[$externalUniqueid]) && !empty($globalsObj->transferHistory[$externalUniqueid]['answer_timestamp'])) {
+            $globalsObj->Answers[$externalUniqueid] = $globalsObj->transferHistory[$externalUniqueid]['answer_timestamp'];
+        }
     },
     function (EventMessage $event) {
         return $event instanceof BridgeEvent && $event->getBridgeState() === 'Link';
@@ -1247,6 +1263,56 @@ function callme_extract_internal_number(...$sources)
 }
 
 /**
+ * Пытается определить CALL_ID, связанный с указанным linkedid или внутренним номером.
+ *
+ * @param string|null $linkedid
+ * @param string|null $intNum
+ * @param Globals $globalsObj
+ * @param HelperFuncs $helper
+ * @return string|null
+ */
+function callme_resolve_call_id($linkedid, $intNum, Globals $globalsObj, HelperFuncs $helper)
+{
+    $candidateLinkedid = $linkedid !== null ? (string)$linkedid : '';
+    $candidateInt = $intNum !== null ? (string)$intNum : '';
+
+    if ($candidateLinkedid !== '' && isset($globalsObj->callIdByLinkedid[$candidateLinkedid])) {
+        return $globalsObj->callIdByLinkedid[$candidateLinkedid];
+    }
+
+    if ($candidateInt !== '' && isset($globalsObj->callIdByInt[$candidateInt])) {
+        return $globalsObj->callIdByInt[$candidateInt];
+    }
+
+    if (!empty($globalsObj->transferHistory) && is_array($globalsObj->transferHistory)) {
+        foreach ($globalsObj->transferHistory as $transferData) {
+            if (!is_array($transferData) || empty($transferData['call_id'])) {
+                continue;
+            }
+            if ($candidateLinkedid !== '' && ($transferData['linkedid'] ?? null) === $candidateLinkedid) {
+                return $transferData['call_id'];
+            }
+            if ($candidateInt !== '' && (string)($transferData['currentIntNum'] ?? '') === $candidateInt) {
+                return $transferData['call_id'];
+            }
+        }
+    }
+
+    if ($candidateInt !== '') {
+        $fallback = $helper->findCallIdByIntNum($candidateInt, $globalsObj);
+        if ($fallback) {
+            return $fallback;
+        }
+    }
+
+    if ($candidateLinkedid !== '' && isset($globalsObj->calls[$candidateLinkedid])) {
+        return $globalsObj->calls[$candidateLinkedid];
+    }
+
+    return null;
+}
+
+/**
  * Общий обработчик начала дозвона по внутреннему номеру.
  *
  * @param EventMessage $event
@@ -1411,11 +1477,24 @@ function callme_handle_dial_end_common(
     $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->calls[$linkedid] ?? ($globalsObj->calls[$callLinkedid] ?? null));
     $currentIntNum = $globalsObj->intNums[$callLinkedid] ?? null;
 
+    if (!$callId) {
+        $callId = callme_resolve_call_id($linkedid, $currentIntNum, $globalsObj, $helper);
+    }
+    if ($callId) {
+        if ($linkedid) {
+            $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+        }
+        if ($currentIntNum) {
+            $globalsObj->callIdByInt[$currentIntNum] = $callId;
+        }
+    }
+    $now = time();
+
     switch ($event->getDialStatus()) {
         case 'ANSWER':
             if ($linkedid && isset($globalsObj->ringingIntNums[$linkedid][$currentIntNum])) {
                 $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['state'] = 'ANSWER';
-                $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['timestamp'] = time();
+                $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['timestamp'] = $now;
             }
             $helper->writeToLog(array('intNum'=>$currentIntNum,
                                         'extNum'=>$event->getKey("Exten"),
@@ -1446,11 +1525,32 @@ function callme_handle_dial_end_common(
             if ($linkedid && $currentIntNum && isset($globalsObj->ringingIntNums[$linkedid][$currentIntNum])) {
                 unset($globalsObj->ringingIntNums[$linkedid][$currentIntNum]);
             }
+            $globalsObj->Dispositions[$callLinkedid] = 'ANSWER';
+            if (empty($globalsObj->Answers[$callLinkedid])) {
+                $globalsObj->Answers[$callLinkedid] = $now;
+            }
+            if (!empty($globalsObj->transferHistory) && $currentIntNum) {
+                foreach ($globalsObj->transferHistory as $externalUniqueid => $transferData) {
+                    if (!is_array($transferData)) {
+                        continue;
+                    }
+                    if ((string)($transferData['currentIntNum'] ?? '') !== (string)$currentIntNum) {
+                        continue;
+                    }
+                    $globalsObj->Dispositions[$externalUniqueid] = 'ANSWER';
+                    if (empty($globalsObj->Answers[$externalUniqueid])) {
+                        $answerTs = $transferData['answer_timestamp'] ?? $now;
+                        $globalsObj->Answers[$externalUniqueid] = $answerTs;
+                        $globalsObj->transferHistory[$externalUniqueid]['answer_timestamp'] = $answerTs;
+                    }
+                    break;
+                }
+            }
             break;
         case 'BUSY':
             if ($linkedid && isset($globalsObj->ringingIntNums[$linkedid][$currentIntNum])) {
                 $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['state'] = 'BUSY';
-                $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['timestamp'] = time();
+                $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['timestamp'] = $now;
             }
             $activeBefore = isset($globalsObj->ringingIntNums[$linkedid]) ? array_keys($globalsObj->ringingIntNums[$linkedid]) : array();
             $helper->writeToLog(array(
@@ -1473,11 +1573,12 @@ function callme_handle_dial_end_common(
                     'activeAfter' => $activeAfter,
                 ), 'incoming call BUSY cleanup');
             }
+            $globalsObj->Dispositions[$callLinkedid] = 'BUSY';
             break;
         case 'CANCEL':
             if ($linkedid && isset($globalsObj->ringingIntNums[$linkedid][$currentIntNum])) {
                 $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['state'] = 'CANCEL';
-                $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['timestamp'] = time();
+                $globalsObj->ringingIntNums[$linkedid][$currentIntNum]['timestamp'] = $now;
             }
             $activeBefore = isset($globalsObj->ringingIntNums[$linkedid]) ? array_keys($globalsObj->ringingIntNums[$linkedid]) : array();
             $helper->writeToLog(array(
@@ -1500,8 +1601,12 @@ function callme_handle_dial_end_common(
                     'activeAfter' => $activeAfter,
                 ), 'incoming call CANCEL cleanup');
             }
+            $globalsObj->Dispositions[$callLinkedid] = 'CANCEL';
             break;
         default:
+            if ($event->getDialStatus()) {
+                $globalsObj->Dispositions[$callLinkedid] = $event->getDialStatus();
+            }
             break;
     }
 
@@ -2346,8 +2451,12 @@ $pamiClient->registerEventListener(
 //                $FullFname = "";
 //              Длинна разговора, пусть будет всегда не меньше 1
                 $CallDuration = $globalsObj->Durations[$callLinkedid];
-                if ($globalsObj->Answers[$callLinkedid]) {
+                if (!empty($globalsObj->Answers[$callLinkedid])) {
                     $CallDuration = time() - $globalsObj->Answers[$callLinkedid];
+                } elseif (!empty($globalsObj->transferHistory[$callLinkedid]['answer_timestamp'])) {
+                    $answerTs = $globalsObj->transferHistory[$callLinkedid]['answer_timestamp'];
+                    $CallDuration = max(0, time() - $answerTs);
+                    $globalsObj->Answers[$callLinkedid] = $answerTs;
                 }
 //                $CallDuration = $CallDuration ? $CallDuration : 1;
 
@@ -2368,6 +2477,15 @@ $pamiClient->registerEventListener(
                 if ($direction === 'inbound' && $CallDisposition === 'CANCEL') {
                     $CallDisposition = 'NO ANSWER';
                     $globalsObj->Dispositions[$callLinkedid] = $CallDisposition;
+                }
+                if (!in_array($CallDisposition, array('ANSWER', 'ANSWERED'), true)) {
+                    if (!empty($globalsObj->transferHistory[$callLinkedid]['answer_timestamp'])) {
+                        $CallDisposition = 'ANSWERED';
+                        $globalsObj->Dispositions[$callLinkedid] = $CallDisposition;
+                    } elseif ($linkedid && !empty($globalsObj->callCrmData[$linkedid]['answer_int_num'])) {
+                        $CallDisposition = 'ANSWERED';
+                        $globalsObj->Dispositions[$callLinkedid] = $CallDisposition;
+                    }
                 }
                 
                 // FALLBACK: Если не нашли call_id - пропускаем обработку
@@ -2413,6 +2531,12 @@ $pamiClient->registerEventListener(
 
                 $finishIntNum = $CallIntNum;
                 $finishUserId = null;
+                if (!$finishIntNum && isset($globalsObj->transferHistory[$callLinkedid]['currentIntNum'])) {
+                    $finishIntNum = (string)$globalsObj->transferHistory[$callLinkedid]['currentIntNum'];
+                }
+                if (!$finishIntNum && $linkedid && !empty($globalsObj->callCrmData[$linkedid]['answer_int_num'])) {
+                    $finishIntNum = (string)$globalsObj->callCrmData[$linkedid]['answer_int_num'];
+                }
                 if ($primaryTarget) {
                     $finishIntNum = $primaryTarget['int_num'] ?? $finishIntNum;
                     $finishUserId = $primaryTarget['user_id'] ?? null;
@@ -2455,7 +2579,7 @@ $pamiClient->registerEventListener(
                     $crmInfo = $globalsObj->callCrmData[$linkedid];
                     $crmEntityType = $crmInfo['entity_type'] ?? null;
                     $crmEntityId = $crmInfo['entity_id'] ?? null;
-                    $finalIntNum = $CallIntNum ?: ($crmInfo['answer_int_num'] ?? null);
+                    $finalIntNum = $finishIntNum ?: ($crmInfo['answer_int_num'] ?? $CallIntNum);
                     $finalUserId = $finalIntNum ? $helper->getUSER_IDByIntNum($finalIntNum) : null;
                     if (!$finalUserId) {
                         $finalUserId = $helper->getFallbackResponsibleUserId();
