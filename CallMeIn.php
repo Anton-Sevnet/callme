@@ -1119,16 +1119,37 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
     $dialStatusRaw = (string) ($event->getKey('DialStatus') ?? '');
     $dialStatus = strtoupper(trim($dialStatusRaw));
     $cleanupOnStop = !in_array($dialStatus, array('ANSWER', 'ANSWERED'), true);
+    $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
 
     if (!$cleanupOnStop) {
+        $isTrackedLinkedid = isset($globalsObj->callDirections[$linkedid])
+            || isset($globalsObj->callIdByLinkedid[$linkedid])
+            || isset($globalsObj->calls[$linkedid])
+            || isset($globalsObj->callShownCards[$linkedid]);
+        $shouldTreatAsAnswer = $isTrackedLinkedid
+            && $agentUniqueId !== ''
+            && $agentUniqueId !== $linkedid;
+
+        if ($shouldTreatAsAnswer) {
+            $helper->writeToLog(array(
+                'linkedid' => $linkedid,
+                'intNum' => $intNum,
+                'dialStatus' => $dialStatus,
+                'agentUniqueid' => $agentUniqueId,
+                'fallbackMode' => 'CallMeRingingStop->Answer',
+            ), 'CallMeRingingStop treated as ANSWER');
+            callme_handle_user_event_ringing_answer($event, $helper, $globalsObj);
+            return;
+        }
+
         $helper->writeToLog(array(
             'linkedid' => $linkedid,
             'intNum' => $intNum,
             'dialStatus' => $dialStatus,
-            'agentUniqueid' => $event->getKey('AgentUniqueid'),
-        ), 'CallMeRingingStop treated as ANSWER');
-        callme_handle_user_event_ringing_answer($event, $helper, $globalsObj);
-        return;
+            'agentUniqueid' => $agentUniqueId,
+            'isTrackedLinkedid' => $isTrackedLinkedid,
+        ), 'CallMeRingingStop skip fallback answer; continue cleanup');
+        $cleanupOnStop = true;
     }
 
     $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
@@ -1170,7 +1191,6 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
         $helper->hideInputCall($intNum, $callId);
     }
 
-    $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
     if ($cleanupOnStop) {
         if (isset($globalsObj->callShownCards[$linkedid][$intNum])) {
             unset($globalsObj->callShownCards[$linkedid][$intNum]);
@@ -2122,13 +2142,29 @@ $pamiClient->registerEventListener(
             return;
         }
 
-        if ($variableName === 'CallMeFULLFNAME'
-            && !isset($globalsObj->FullFnameUrls[$callUniqueid])) {
-            $relativePath = $rawValue;
-            $globalsObj->FullFnameUrls[$callUniqueid] = "http://195.98.170.206/continuous/" . $relativePath;
+        $callLinkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid] ?? $callUniqueid;
+        $callId = $globalsObj->calls[$callUniqueid] ?? null;
+
+        if ($variableName === 'CallMeFULLFNAME') {
+            $relativePath = trim((string) $rawValue);
+            if ($relativePath !== '') {
+                $fullUrl = "http://195.98.170.206/continuous/" . $relativePath;
+                $globalsObj->FullFnameUrls[$callUniqueid] = $fullUrl;
+
+                if ($callLinkedid && $callLinkedid !== $callUniqueid) {
+                    $globalsObj->FullFnameUrls[$callLinkedid] = $fullUrl;
+                }
+
+                if ($callId) {
+                    $globalsObj->FullFnameUrls[$callId] = $fullUrl;
+                    $primaryLinkedid = $globalsObj->callsByCallId[$callId] ?? null;
+                    if ($primaryLinkedid && $primaryLinkedid !== $callLinkedid) {
+                        $globalsObj->FullFnameUrls[$primaryLinkedid] = $fullUrl;
+                    }
+                }
+            }
         }
 
-        $callLinkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid] ?? $callUniqueid;
         $isAnswered = $callLinkedid && !empty($globalsObj->answeredCalls[$callLinkedid]);
         $helper->writeToLog(array(
             'uniqueid' => $callUniqueid,
