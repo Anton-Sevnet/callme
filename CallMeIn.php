@@ -1120,6 +1120,17 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
     $dialStatus = strtoupper(trim($dialStatusRaw));
     $cleanupOnStop = !in_array($dialStatus, array('ANSWER', 'ANSWERED'), true);
 
+    if (!$cleanupOnStop) {
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'intNum' => $intNum,
+            'dialStatus' => $dialStatus,
+            'agentUniqueid' => $event->getKey('AgentUniqueid'),
+        ), 'CallMeRingingStop treated as ANSWER');
+        callme_handle_user_event_ringing_answer($event, $helper, $globalsObj);
+        return;
+    }
+
     $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
     if (!$callId && isset($globalsObj->callIdByInt[$intNum])) {
         $callId = $globalsObj->callIdByInt[$intNum];
