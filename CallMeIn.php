@@ -1609,8 +1609,21 @@ $pamiClient->registerEventListener(
 
                 //добавляем звонок в массив, для обработки в других ивентах
                 $globalsObj->uniqueids[] = $callLinkedid;
-                $globalsObj->Dispositions[$callLinkedid] = 'NO ANSWER';
-                unset($globalsObj->answeredCalls[$callLinkedid]);
+                $alreadyAnswered = !empty($globalsObj->answeredCalls[$callLinkedid]);
+                $helper->writeToLog(array(
+                    'linkedid' => $callLinkedid,
+                    'alreadyAnswered' => $alreadyAnswered,
+                    'action' => 'NewchannelIncoming:initDisposition'
+                ), 'DIAG: NewchannelIncoming disposition init');
+                if (!$alreadyAnswered) {
+                    $globalsObj->Dispositions[$callLinkedid] = 'NO ANSWER';
+                    unset($globalsObj->answeredCalls[$callLinkedid]);
+                } else {
+                    $helper->writeToLog(array(
+                        'linkedid' => $callLinkedid,
+                        'reason' => 'skip reset disposition; already answered'
+                    ), 'DIAG: NewchannelIncoming skip disposition reset');
+                }
                 $globalsObj->callDirections[$callLinkedid] = 'inbound';
                 //берем Exten из ивента
 
@@ -1809,10 +1822,23 @@ $pamiClient->registerEventListener(
         $globalsObj->calls[$callLinkedid] = $call_id;
         $globalsObj->callsByCallId[$call_id] = $callLinkedid; // Обратная связка для fallback
         $globalsObj->uniqueids[] = $callLinkedid;
-        $globalsObj->Dispositions[$callLinkedid] = 'NO ANSWER';
+        $alreadyAnswered = !empty($globalsObj->answeredCalls[$callLinkedid]);
+        $helper->writeToLog(array(
+            'linkedid' => $callLinkedid,
+            'alreadyAnswered' => $alreadyAnswered,
+            'action' => 'NewchannelOutgoing:initDisposition'
+        ), 'DIAG: NewchannelOutgoing disposition init');
+        if (!$alreadyAnswered) {
+            $globalsObj->Dispositions[$callLinkedid] = 'NO ANSWER';
+            unset($globalsObj->answeredCalls[$callLinkedid]);
+        } else {
+            $helper->writeToLog(array(
+                'linkedid' => $callLinkedid,
+                'reason' => 'skip reset disposition; already answered'
+            ), 'DIAG: NewchannelOutgoing skip disposition reset');
+        }
         $globalsObj->intNums[$callLinkedid] = $intNum;
         $globalsObj->Durations[$callLinkedid] = 0;
-        unset($globalsObj->answeredCalls[$callLinkedid]);
         echo "-------------------------------------------------------------------\n\r";
         echo "\n\r";
 
@@ -2093,6 +2119,15 @@ $pamiClient->registerEventListener(
 
         $callLinkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid] ?? $callUniqueid;
         $isAnswered = $callLinkedid && !empty($globalsObj->answeredCalls[$callLinkedid]);
+        $helper->writeToLog(array(
+            'uniqueid' => $callUniqueid,
+            'linkedid' => $callLinkedid,
+            'variable' => $variableName,
+            'value' => $rawValue,
+            'isAnswered' => $isAnswered,
+            'currentDispositionUnique' => $globalsObj->Dispositions[$callUniqueid] ?? null,
+            'currentDispositionLinked' => $callLinkedid ? ($globalsObj->Dispositions[$callLinkedid] ?? null) : null,
+        ), 'DIAG: VarSetEvent disposition handling');
 
         if (($variableName === 'ANSWER' || $variableName === 'DIALSTATUS')
             && strlen($rawValue) > 1) {
@@ -2111,6 +2146,12 @@ $pamiClient->registerEventListener(
         if (preg_match('/^[A-Z\ ]+$/', $rawValue)) {
             $upperValue = strtoupper($rawValue);
             if ($isAnswered && $upperValue !== 'ANSWERED') {
+                $helper->writeToLog(array(
+                    'uniqueid' => $callUniqueid,
+                    'linkedid' => $callLinkedid,
+                    'upperValue' => $upperValue,
+                    'reason' => 'skip override because answered'
+                ), 'DIAG: VarSetEvent skip disposition override');
                 // игнорируем статусы, противоречащие факту ответа
             } else {
                 $globalsObj->Dispositions[$callUniqueid] = $upperValue;
@@ -2454,6 +2495,16 @@ $pamiClient->registerEventListener(
                     }
                 }
                 $isAnswered = $linkedid && !empty($globalsObj->answeredCalls[$linkedid]);
+                $helper->writeToLog(array(
+                    'callLinkedid' => $callLinkedid,
+                    'resolvedLinkedid' => $linkedid,
+                    'callDispositionBefore' => $CallDisposition,
+                    'isAnsweredFlag' => $isAnswered,
+                    'dispositionsSnapshot' => array(
+                        'uniq' => $globalsObj->Dispositions[$callLinkedid] ?? null,
+                        'linked' => $linkedid ? ($globalsObj->Dispositions[$linkedid] ?? null) : null,
+                    ),
+                ), 'DIAG: HangupEvent disposition snapshot');
                 if ($isAnswered) {
                     $CallDisposition = 'ANSWERED';
                     $globalsObj->Dispositions[$callLinkedid] = $CallDisposition;
