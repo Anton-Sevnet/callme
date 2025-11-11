@@ -2075,6 +2075,16 @@ $pamiClient->registerEventListener(
             $globalsObj->FullFnameUrls[$callUniqueid] = "http://195.98.170.206/continuous/" . $relativePath;
         }
 
+        $callLinkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid] ?? $callUniqueid;
+        $helper->writeToLog(array(
+            'uniqueid' => $callUniqueid,
+            'linkedid' => $callLinkedid,
+            'variable' => $variableName,
+            'value' => $rawValue,
+            'dispositionUnique' => $globalsObj->Dispositions[$callUniqueid] ?? null,
+            'dispositionLinked' => $callLinkedid ? ($globalsObj->Dispositions[$callLinkedid] ?? null) : null,
+        ), 'DIAG: VarSetEvent disposition handling');
+
         if (($variableName === 'ANSWER' || $variableName === 'DIALSTATUS')
             && strlen($rawValue) > 1) {
             $globalsObj->Dispositions[$callUniqueid] = "ANSWERED";
@@ -2087,6 +2097,11 @@ $pamiClient->registerEventListener(
         }
         if (preg_match('/^[A-Z\ ]+$/', $rawValue)) {
             $globalsObj->Dispositions[$callUniqueid] = $rawValue;
+            $helper->writeToLog(array(
+                'uniqueid' => $callUniqueid,
+                'linkedid' => $callLinkedid,
+                'upperValue' => $rawValue,
+            ), 'DIAG: VarSetEvent disposition override');
         }
 
         $helper->writeToLog(array('FullFnameUrls'=>$globalsObj->FullFnameUrls,
@@ -2419,6 +2434,16 @@ $pamiClient->registerEventListener(
                         $direction = 'outbound';
                     }
                 }
+                $helper->writeToLog(array(
+                    'callLinkedid' => $callLinkedid,
+                    'resolvedLinkedid' => $linkedid,
+                    'callDispositionBefore' => $CallDisposition,
+                    'dispositionsSnapshot' => array(
+                        'uniq' => $globalsObj->Dispositions[$callLinkedid] ?? null,
+                        'linked' => $linkedid ? ($globalsObj->Dispositions[$linkedid] ?? null) : null,
+                    ),
+                ), 'DIAG: HangupEvent disposition snapshot');
+
                 if ($direction === 'inbound' && $CallDisposition === 'CANCEL') {
                     $CallDisposition = 'NO ANSWER';
                     $globalsObj->Dispositions[$callLinkedid] = $CallDisposition;
