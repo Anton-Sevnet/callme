@@ -613,6 +613,77 @@ function callme_hide_cards_batch($linkedid, $call_id, HelperFuncs $helper, Globa
 }
 
 /**
+ * Принудительно останавливает отображение карточки для конкретного внутреннего номера.
+ *
+ * @param string $linkedid
+ * @param string $intNum
+ * @param HelperFuncs $helper
+ * @param Globals $globalsObj
+ * @param array $context
+ * @return array{call_id:?string,hidden:bool}|false
+ */
+function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper, Globals $globalsObj, array $context = array())
+{
+    if ($linkedid === '' || $intNum === '') {
+        return false;
+    }
+
+    $callId = callme_resolve_call_id($linkedid, $intNum, $globalsObj, $helper);
+    $hidden = false;
+
+    if ($callId && callme_is_card_marked_shown($linkedid, $intNum, $globalsObj)) {
+        $hidden = (bool)$helper->hideInputCall($intNum, $callId);
+    }
+
+    if (isset($globalsObj->callShownCards[$linkedid][$intNum])) {
+        unset($globalsObj->callShownCards[$linkedid][$intNum]);
+        if (empty($globalsObj->callShownCards[$linkedid])) {
+            unset($globalsObj->callShownCards[$linkedid]);
+        }
+    }
+
+    if (isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
+        unset($globalsObj->ringingIntNums[$linkedid][$intNum]);
+        if (empty($globalsObj->ringingIntNums[$linkedid])) {
+            unset($globalsObj->ringingIntNums[$linkedid]);
+        }
+    }
+
+    if (isset($globalsObj->ringOrder[$linkedid])) {
+        $globalsObj->ringOrder[$linkedid] = array_values(array_filter(
+            $globalsObj->ringOrder[$linkedid],
+            function ($value) use ($intNum) {
+                return (string)$value !== (string)$intNum;
+            }
+        ));
+        if (empty($globalsObj->ringOrder[$linkedid])) {
+            unset($globalsObj->ringOrder[$linkedid]);
+        }
+    }
+
+    if (isset($globalsObj->callIdByInt[$intNum])) {
+        unset($globalsObj->callIdByInt[$intNum]);
+    }
+
+    if (!empty($context['agent_uniqueid'])) {
+        unset($globalsObj->uniqueidToLinkedid[$context['agent_uniqueid']]);
+        unset($globalsObj->intNums[$context['agent_uniqueid']]);
+    }
+
+    $helper->writeToLog(array_merge(array(
+        'linkedid' => $linkedid,
+        'intNum' => $intNum,
+        'call_id' => $callId,
+        'hidden' => $hidden,
+    ), $context), 'Forced ring entry cleanup');
+
+    return array(
+        'call_id' => $callId,
+        'hidden' => $hidden,
+    );
+}
+
+/**
  * Переносит карточку звонка между внутренними номерами (attended/blind transfer, очередь).
  *
  * @param string $linkedid
@@ -895,6 +966,51 @@ $pamiClient->registerEventListener(
     }
 );
 
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        $agentUniqueId = (string) ($event->getKey('Uniqueid') ?? '');
+        if ($agentUniqueId === '') {
+            return;
+        }
+        $linkedid = $globalsObj->uniqueidToLinkedid[$agentUniqueId] ?? null;
+        $intNum = $globalsObj->intNums[$agentUniqueId] ?? null;
+        if (!$linkedid || !$intNum) {
+            return;
+        }
+        $ringEntry = $globalsObj->ringingIntNums[$linkedid][$intNum] ?? null;
+        if (!$ringEntry || strtoupper((string)($ringEntry['state'] ?? '')) === 'ANSWER') {
+            return;
+        }
+
+        callme_force_ring_entry_cleanup($linkedid, $intNum, $helper, $globalsObj, array(
+            'event' => 'HangupEvent',
+            'reason' => 'agent_leg_hangup',
+            'agent_uniqueid' => $agentUniqueId,
+            'channel' => $event->getChannel(),
+            'cause' => $event->getKey('Cause'),
+            'cause_txt' => $event->getKey('Cause-txt'),
+        ));
+    },
+    function (EventMessage $event) use ($globalsObj) {
+        if (!($event instanceof HangupEvent)) {
+            return false;
+        }
+        $uniqueid = (string) ($event->getKey('Uniqueid') ?? '');
+        if ($uniqueid === '') {
+            return false;
+        }
+        if (!isset($globalsObj->intNums[$uniqueid])) {
+            return false;
+        }
+        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+        $intNum = $globalsObj->intNums[$uniqueid] ?? null;
+        if (!$linkedid || !$intNum) {
+            return false;
+        }
+        return isset($globalsObj->ringingIntNums[$linkedid][$intNum]);
+    }
+);
+
 /**
  * Обработка пользовательского события начала дозвона по внутреннему номеру.
  *
@@ -989,6 +1105,14 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
             $globalsObj->calls[$agentUniqueId] = $callId;
         }
         $globalsObj->callsByCallId[$callId] = $linkedid;
+    } else {
+        $helper->writeToLog(array(
+            'event' => 'CallMeRingingAnswer',
+            'linkedid' => $linkedid,
+            'intNum' => $intNum,
+            'agentUniqueid' => $agentUniqueId,
+            'message' => 'CALL_ID not resolved, fallback cleanup may trigger',
+        ), 'CallMeRingingAnswer missing CALL_ID');
     }
 
     $helper->writeToLog(array(
