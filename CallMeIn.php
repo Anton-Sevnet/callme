@@ -947,7 +947,11 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
         $globalsObj->intNums[$agentUniqueId] = $intNum;
     }
 
-    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->callIdByInt[$intNum] ?? null);
+    $eventCallId = trim((string) ($event->getKey('CallId') ?? $event->getKey('CALLID') ?? ''));
+    $callId = $eventCallId !== '' ? $eventCallId : null;
+    if (!$callId) {
+        $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->callIdByInt[$intNum] ?? null);
+    }
     if (!$callId && $agentUniqueId !== '' && isset($globalsObj->calls[$agentUniqueId])) {
         $callId = $globalsObj->calls[$agentUniqueId];
     }
@@ -1049,7 +1053,11 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
         $globalsObj->intNums[$agentUniqueId] = $intNum;
     }
 
-    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->callIdByInt[$intNum] ?? null);
+    $eventCallId = trim((string) ($event->getKey('CallId') ?? $event->getKey('CALLID') ?? ''));
+    $callId = $eventCallId !== '' ? $eventCallId : null;
+    if (!$callId) {
+        $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->callIdByInt[$intNum] ?? null);
+    }
     if (!$callId && isset($globalsObj->calls[$linkedid])) {
         $callId = $globalsObj->calls[$linkedid];
     }
@@ -1157,7 +1165,11 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
     $dialStatus = strtoupper(trim($dialStatusRaw));
     $cleanupOnStop = !in_array($dialStatus, array('ANSWER', 'ANSWERED'), true);
 
-    $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
+    $eventCallId = trim((string) ($event->getKey('CallId') ?? $event->getKey('CALLID') ?? ''));
+    $callId = $eventCallId !== '' ? $eventCallId : null;
+    if (!$callId) {
+        $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
+    }
     if (!$callId && isset($globalsObj->callIdByInt[$intNum])) {
         $callId = $globalsObj->callIdByInt[$intNum];
     }
@@ -1824,6 +1836,10 @@ $pamiClient->registerEventListener(
                         'crm_responsible_user_id' => $responsibleUserId,
                         'fallbackUserId' => $fallbackUserId,
                     ), 'Immediate call registered on agent');
+
+                    if (!empty($call_id) && !empty($CallChannel)) {
+                        $callami->SetVar('CALLME_CALL_ID', $call_id, $CallChannel);
+                    }
                 } else {
                     $helper->writeToLog(array(
                         'linkedid' => $callLinkedid,
