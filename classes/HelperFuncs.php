@@ -1057,6 +1057,29 @@ class HelperFuncs {
 	    else return;
 	}
 
+    /**
+     * Проверка включен ли режим детального логирования.
+     *
+     * @return bool
+     */
+    public function isDebugEnabled() {
+        return (bool)$this->getConfig('CallMeDEBUG');
+    }
+
+    /**
+     * Упрощённая запись отладочного сообщения (использует writeToLog).
+     *
+     * @param string $title
+     * @param array  $data
+     * @return void
+     */
+    public function writeDebugTrace($title, array $data = array()) {
+        if (!$this->isDebugEnabled()) {
+            return;
+        }
+        $this->writeToLog($data, $title);
+    }
+
 	public function logAmiHealth($channel, $level, $message, array $context = array()) {
 		$config = $this->getConfig('ami_healthcheck_log');
 		if (!is_array($config)) {

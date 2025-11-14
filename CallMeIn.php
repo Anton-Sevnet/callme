@@ -629,6 +629,7 @@ function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper
     }
 
     $callId = callme_resolve_call_id($linkedid, $intNum, $globalsObj, $helper);
+    $ringStateBefore = $globalsObj->ringingIntNums[$linkedid][$intNum] ?? null;
     $hidden = false;
 
     if ($callId && callme_is_card_marked_shown($linkedid, $intNum, $globalsObj)) {
@@ -676,6 +677,16 @@ function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper
         'call_id' => $callId,
         'hidden' => $hidden,
     ), $context), 'Forced ring entry cleanup');
+
+    if ($callId === null && $helper->isDebugEnabled()) {
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'intNum' => $intNum,
+            'context' => $context,
+            'ringStateBefore' => $ringStateBefore,
+            'activeCallsHash' => compute_active_calls_hash($globalsObj),
+        ), 'Ring cleanup without CALL_ID snapshot');
+    }
 
     return array(
         'call_id' => $callId,
@@ -1107,12 +1118,12 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
         $globalsObj->callsByCallId[$callId] = $linkedid;
     } else {
         $helper->writeToLog(array(
-            'event' => 'CallMeRingingAnswer',
+            'event' => 'CallMeRingingStart',
             'linkedid' => $linkedid,
             'intNum' => $intNum,
             'agentUniqueid' => $agentUniqueId,
             'message' => 'CALL_ID not resolved, fallback cleanup may trigger',
-        ), 'CallMeRingingAnswer missing CALL_ID');
+        ), 'CallMeRingingStart unresolved CALL_ID');
     }
 
     $helper->writeToLog(array(
@@ -1221,6 +1232,17 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
         $globalsObj->callsByCallId[$callId] = $linkedid;
     }
 
+    if (!$callId && $helper->isDebugEnabled()) {
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'intNum' => $intNum,
+            'agentUniqueid' => $agentUniqueId,
+            'ringingEntry' => $entry,
+            'knownByLinkedid' => isset($globalsObj->callIdByLinkedid[$linkedid]),
+            'knownByInt' => isset($globalsObj->callIdByInt[$intNum]),
+        ), 'CallMeRingingAnswer unresolved CALL_ID');
+    }
+
     $helper->writeToLog(array(
         'event' => 'CallMeRingingAnswer',
         'linkedid' => $linkedid,
@@ -1326,6 +1348,15 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
             }
             break;
         }
+    }
+
+    if (!$callId && $helper->isDebugEnabled()) {
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'intNum' => $intNum,
+            'dialStatus' => $dialStatus,
+            'cleanupOnStop' => $cleanupOnStop,
+        ), 'CallMeRingingStop unresolved CALL_ID');
     }
 
     if ($callId && callme_is_card_marked_shown($linkedid, $intNum, $globalsObj) && $cleanupOnStop) {
@@ -1476,6 +1507,15 @@ function callme_resolve_call_id($linkedid, $intNum, Globals $globalsObj, HelperF
 
     if ($candidateLinkedid !== '' && isset($globalsObj->calls[$candidateLinkedid])) {
         return $globalsObj->calls[$candidateLinkedid];
+    }
+
+    if ($helper->isDebugEnabled()) {
+        $helper->writeToLog(array(
+            'linkedid' => $candidateLinkedid,
+            'intNum' => $candidateInt,
+            'hasLinkedMap' => isset($globalsObj->callIdByLinkedid[$candidateLinkedid]),
+            'hasIntMap' => isset($globalsObj->callIdByInt[$candidateInt]),
+        ), 'callme_resolve_call_id unresolved');
     }
 
     return null;
