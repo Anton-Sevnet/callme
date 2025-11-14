@@ -1739,6 +1739,14 @@ $pamiClient->registerEventListener(
                                                
                 // выставим CallerID 
                 $callami->SetVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel);
+                if (!empty($CallMeCallerIDName)) {
+                    $callami->SetVar("__CALLME_CONNECTEDLINE_NAME", $CallMeCallerIDName, $CallChannel);
+                    $helper->writeToLog(array(
+                        'linkedid' => $callLinkedid,
+                        'channel' => $CallChannel,
+                        'connectedline_name' => $CallMeCallerIDName,
+                    ), 'Prepared ConnectedLine name for agent');
+                }
                 
                 $fallbackUserId = $helper->getFallbackResponsibleUserId();
                 $fallbackUserInt = $fallbackUserId ? $helper->getIntNumByUSER_ID($fallbackUserId) : null;
