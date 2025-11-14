@@ -488,6 +488,33 @@ function callme_find_linkedid_for_int($intNum, Globals $globalsObj, $fallbackLin
 }
 
 /**
+ * Клонирует контекст звонка (CALL_ID, CRM-данные, направление) между linkedid.
+ *
+ * @param string|null $sourceLinkedid
+ * @param string $targetLinkedid
+ * @param string $callId
+ * @param Globals $globalsObj
+ * @return void
+ */
+function callme_clone_call_context($sourceLinkedid, $targetLinkedid, $callId, Globals $globalsObj)
+{
+    if ($targetLinkedid === '' || $callId === '') {
+        return;
+    }
+
+    $globalsObj->callIdByLinkedid[$targetLinkedid] = $callId;
+    $globalsObj->callsByCallId[$callId] = $targetLinkedid;
+    $globalsObj->calls[$targetLinkedid] = $callId;
+
+    if ($sourceLinkedid && !isset($globalsObj->callCrmData[$targetLinkedid]) && isset($globalsObj->callCrmData[$sourceLinkedid])) {
+        $globalsObj->callCrmData[$targetLinkedid] = $globalsObj->callCrmData[$sourceLinkedid];
+    }
+    if ($sourceLinkedid && !isset($globalsObj->callDirections[$targetLinkedid]) && isset($globalsObj->callDirections[$sourceLinkedid])) {
+        $globalsObj->callDirections[$targetLinkedid] = $globalsObj->callDirections[$sourceLinkedid];
+    }
+}
+
+/**
  * Собирает список целей (пользователь/внутренний номер), для которых карточка была показана.
  *
  * @param string $linkedid
@@ -648,6 +675,12 @@ function callme_transfer_move_card($linkedid, $callId, $fromIntNum, $toIntNum, H
     }
     if (!$targetLinkedid) {
         return;
+    }
+
+    if ($sourceLinkedid && $sourceLinkedid !== $targetLinkedid) {
+        callme_clone_call_context($sourceLinkedid, $targetLinkedid, $callId, $globalsObj);
+    } else {
+        callme_clone_call_context($targetLinkedid, $targetLinkedid, $callId, $globalsObj);
     }
 
     if (!isset($globalsObj->ringOrder[$targetLinkedid])) {
@@ -1378,6 +1411,32 @@ function callme_handle_dial_begin_common(
 
     $normalizedCaller = callme_normalize_phone($callerNumberRaw);
 
+    $call_id = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
+    if (!$call_id) {
+        $sourceLinkedid = null;
+        $sourceInternal = callme_extract_internal_number(
+            $event->getKey('CallerIDNum'),
+            $event->getKey('CallerIDName'),
+            $event->getKey('Channel')
+        );
+        if ($sourceInternal) {
+            $sourceInternal = (string)$sourceInternal;
+            $call_id = $globalsObj->callIdByInt[$sourceInternal] ?? null;
+            if (!$call_id) {
+                $sourceLinkedid = callme_find_linkedid_for_int($sourceInternal, $globalsObj, null);
+                if ($sourceLinkedid && isset($globalsObj->callIdByLinkedid[$sourceLinkedid])) {
+                    $call_id = $globalsObj->callIdByLinkedid[$sourceLinkedid];
+                }
+            }
+            if ($call_id) {
+                if (!$sourceLinkedid) {
+                    $sourceLinkedid = $globalsObj->callsByCallId[$call_id] ?? null;
+                }
+                callme_clone_call_context($sourceLinkedid, $linkedid, $call_id, $globalsObj);
+            }
+        }
+    }
+
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
         $globalsObj->ringingIntNums[$linkedid] = array();
     }
@@ -1428,7 +1487,6 @@ function callme_handle_dial_begin_common(
         callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
     }
 
-    $call_id = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
     if ($call_id) {
         $globalsObj->calls[$callUniqueid] = $call_id;
         if ($linkedid !== $callUniqueid) {
@@ -1936,6 +1994,10 @@ $pamiClient->registerEventListener(
                     continue;
                 }
 
+                if ($linkedid && !empty($transferData['linkedid']) && $transferData['linkedid'] !== $linkedid) {
+                    continue;
+                }
+
                 $externalChannel = $transferData['externalChannel'] ?? '';
                 $externalChannelBase = preg_replace('/-[^-]+$/', '', (string)$externalChannel);
                 $bridgedPeerBase = preg_replace('/-[^-]+$/', '', $bridgedPeer);
@@ -1943,7 +2005,16 @@ $pamiClient->registerEventListener(
                     continue;
                 }
 
-                $linkedidForTransfer = $globalsObj->uniqueidToLinkedid[$externalUniqueid] ?? ($globalsObj->callsByCallId[$callId] ?? ($linkedid ?: $externalUniqueid));
+                $linkedidForTransfer = $globalsObj->uniqueidToLinkedid[$externalUniqueid]
+                    ?? ($globalsObj->callsByCallId[$callId] ?? ($linkedid ?: $externalUniqueid));
+                if ($linkedid && $linkedidForTransfer !== $linkedid) {
+                    $linkedidForTransfer = $linkedid;
+                }
+
+                $expectedCallId = callme_resolve_call_id($linkedidForTransfer, $intNum, $globalsObj, $helper);
+                if ($expectedCallId && $expectedCallId !== $callId) {
+                    $callId = $expectedCallId;
+                }
 
                 $oldIntNum = $transferData['currentIntNum'] ?? null;
                 if ($oldIntNum === $intNum) {
@@ -1967,6 +2038,8 @@ $pamiClient->registerEventListener(
                     'timestamp' => time(),
                 );
                 $globalsObj->intNums[$externalUniqueid] = $intNum;
+                $globalsObj->callIdByLinkedid[$linkedidForTransfer] = $callId;
+                $globalsObj->callIdByInt[$intNum] = $callId;
                 return;
             }
 
