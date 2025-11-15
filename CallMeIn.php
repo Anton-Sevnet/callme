@@ -2037,14 +2037,14 @@ $pamiClient->registerEventListener(
                 if (!empty($CallMeCallerIDName)) {
                     $callami->SetVar("__CALLME_CONNECTEDLINE_NAME", $CallMeCallerIDName, $CallChannel);
                     if (!empty($CallChannel)) {
-                        $callami->SetVar(sprintf("SHARED(CALLME_CL_NAME,%s)", $CallChannel), $CallMeCallerIDName, $CallChannel);
+                        $callami->SetVar("SHARED(CALLME_CL_NAME)", $CallMeCallerIDName, $CallChannel);
                         $callami->SetVar("__CALLME_INGRESS_CHANNEL", $CallChannel, $CallChannel);
                     }
                     $helper->writeToLog(array(
                         'linkedid' => $callLinkedid,
                         'channel' => $CallChannel,
                         'connectedline_name' => $CallMeCallerIDName,
-                        'shared_key' => $CallChannel ? sprintf('CALLME_CL_NAME,%s', $CallChannel) : null,
+                        'shared_channel' => $CallChannel ?: null,
                     ), 'Prepared ConnectedLine name for agent');
                 }
                 
