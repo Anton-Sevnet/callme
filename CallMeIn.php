@@ -58,6 +58,39 @@ if (!function_exists('callme_channel_base')) {
     }
 }
 
+if (!function_exists('callme_is_queue_related_channel')) {
+    /**
+     * Проверяет, относится ли канал/контекст к очередям или группам обзвона.
+     *
+     * @param string|null $channel
+     * @param string|null $context
+     * @param string|null $dialString
+     * @return bool
+     */
+    function callme_is_queue_related_channel($channel, $context = null, $dialString = null)
+    {
+        $haystacks = array(
+            strtolower((string)$channel),
+            strtolower((string)$context),
+            strtolower((string)$dialString),
+        );
+        foreach ($haystacks as $haystack) {
+            if ($haystack === '') {
+                continue;
+            }
+            if (strpos($haystack, 'from-queue') !== false ||
+                strpos($haystack, 'ext-queues') !== false ||
+                strpos($haystack, 'from-ringgroup') !== false ||
+                strpos($haystack, 'from-ringgroups') !== false ||
+                strpos($haystack, 'app_queue') !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+
 if (!function_exists('callme_normalize_route_type')) {
     /**
      * Приводит тип маршрута звонка к одному из известных значений.
@@ -96,6 +129,27 @@ if (!function_exists('callme_maybe_unset_route_type')) {
         }
         if (!isset($globalsObj->ringingIntNums[$linkedid]) && !isset($globalsObj->callShownCards[$linkedid])) {
             unset($globalsObj->callRouteTypes[$linkedid]);
+        }
+    }
+}
+
+if (!function_exists('callme_forget_pending_dial_entry')) {
+    /**
+     * Очищает временные данные fallback DialBegin для указанного uniqueid.
+     *
+     * @param string|null $uniqueid
+     * @param Globals $globalsObj
+     * @param bool $forgetProcessed
+     * @return void
+     */
+    function callme_forget_pending_dial_entry($uniqueid, Globals $globalsObj, $forgetProcessed = false)
+    {
+        if ($uniqueid === null || $uniqueid === '') {
+            return;
+        }
+        unset($globalsObj->pendingDialBegin[$uniqueid]);
+        if ($forgetProcessed) {
+            unset($globalsObj->dialBeginProcessed[$uniqueid]);
         }
     }
 }
@@ -1757,6 +1811,15 @@ function callme_handle_dial_begin_common(
     HelperFuncs $helper,
     Globals $globalsObj
 ) {
+    if (!empty($callUniqueid)) {
+        $globalsObj->dialBeginProcessed[$callUniqueid] = true;
+        callme_forget_pending_dial_entry($callUniqueid, $globalsObj, false);
+    }
+    if (!empty($destUniqueId)) {
+        $globalsObj->dialBeginProcessed[$destUniqueId] = true;
+        callme_forget_pending_dial_entry($destUniqueId, $globalsObj, false);
+    }
+
     $linkedidOriginal = $linkedid;
     if (empty($linkedidOriginal)) {
         $linkedidOriginal = $callUniqueid;
@@ -1926,6 +1989,59 @@ function callme_handle_dial_begin_common(
         $globalsObj->intNums[$linkedid] = $exten;
     }
 }
+
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($globalsObj) {
+        $uniqueid = (string)($event->getKey('Uniqueid') ?? '');
+        if ($uniqueid === '') {
+            return;
+        }
+        // Не перезаписываем, если уже обработали DialBegin через нормальные события
+        if (!empty($globalsObj->dialBeginProcessed[$uniqueid])) {
+            return;
+        }
+
+        $channel = (string)($event->getKey('Channel') ?? '');
+        $context = (string)($event->getKey('Context') ?? '');
+        $dialString = (string)($event->getKey('Dialstring') ?? $event->getKey('DialString') ?? '');
+        if (!callme_is_queue_related_channel($channel, $context, $dialString)) {
+            return;
+        }
+
+        $exten = callme_extract_internal_number($event->getExtension(), $channel, $dialString);
+        if (!$exten) {
+            return;
+        }
+
+        try {
+            $eventClone = clone $event;
+        } catch (\Throwable $cloneError) {
+            $eventClone = $event;
+        }
+
+        $globalsObj->pendingDialBegin[$uniqueid] = array(
+            'event' => $eventClone,
+            'exten' => $exten,
+            'dialstring' => $dialString,
+            'channel' => $channel,
+            'context' => $context,
+            'caller' => (string)$event->getCallerIdNum(),
+            'timestamp' => microtime(true),
+        );
+    },
+    function (EventMessage $event) {
+        if (!($event instanceof NewchannelEvent)) {
+            return false;
+        }
+        $channel = (string)($event->getKey('Channel') ?? '');
+        $context = (string)($event->getKey('Context') ?? '');
+        $dialString = (string)($event->getKey('Dialstring') ?? $event->getKey('DialString') ?? '');
+        if (strpos(strtolower($channel), 'local/') !== 0) {
+            return false;
+        }
+        return callme_is_queue_related_channel($channel, $context, $dialString);
+    }
+);
 
 /**
  * Общий обработчик завершения дозвона по внутреннему номеру.
@@ -2386,6 +2502,19 @@ $pamiClient->registerEventListener(
     }
 );
 
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($globalsObj) {
+        $uniqueid = (string) ($event->getKey('Uniqueid') ?? $event->getKey('UniqueID') ?? '');
+        if ($uniqueid === '') {
+            return;
+        }
+        callme_forget_pending_dial_entry($uniqueid, $globalsObj, true);
+    },
+    function (EventMessage $event) {
+        return $event instanceof HangupEvent;
+    }
+);
+
 //обрабатываем VarSetEvent события, получаем url записи звонка
 //VarSetEvent
 $pamiClient->registerEventListener(
@@ -2398,6 +2527,7 @@ $pamiClient->registerEventListener(
         $callUniqueid = $event->getKey("Uniqueid");
         $linkedidFromEvent = $event->getKey("Linkedid");
         $linkedid = $linkedidFromEvent ?: ($globalsObj->uniqueidToLinkedid[$callUniqueid] ?? null);
+        $channelName = (string)$event->getChannel();
 
         if ($variableName === 'BRIDGEPEER') {
             $channel = (string)$event->getChannel();
@@ -2470,6 +2600,40 @@ $pamiClient->registerEventListener(
                 $globalsObj->callIdByLinkedid[$linkedidForTransfer] = $callId;
                 $globalsObj->callIdByInt[$intNum] = $callId;
                 return;
+            }
+
+            return;
+        } elseif ($variableName === '__CALLME_LINKEDID') {
+            $resolvedLinkedid = trim((string)$rawValue);
+            $uniqueid = (string)$callUniqueid;
+            if ($resolvedLinkedid === '' || $uniqueid === '') {
+                return;
+            }
+
+            $globalsObj->uniqueidToLinkedid[$uniqueid] = $resolvedLinkedid;
+            if (callme_is_queue_related_channel($channelName, $event->getKey('Context'))) {
+                $globalsObj->callRouteTypes[$resolvedLinkedid] = 'multi';
+            }
+
+            if (empty($globalsObj->dialBeginProcessed[$uniqueid]) && isset($globalsObj->pendingDialBegin[$uniqueid])) {
+                $pending = $globalsObj->pendingDialBegin[$uniqueid];
+                $pendingEvent = $pending['event'] ?? null;
+                $pendingExten = $pending['exten'] ?? null;
+                if ($pendingEvent instanceof EventMessage && $pendingExten) {
+                    $globalsObj->dialBeginProcessed[$uniqueid] = true;
+                    callme_handle_dial_begin_common(
+                        $pendingEvent,
+                        $uniqueid,
+                        null,
+                        $resolvedLinkedid,
+                        $pendingExten,
+                        $pending['dialstring'] ?? '',
+                        $pending['caller'] ?? '',
+                        $helper,
+                        $globalsObj
+                    );
+                }
+                callme_forget_pending_dial_entry($uniqueid, $globalsObj, false);
             }
 
             return;

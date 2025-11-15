@@ -59,6 +59,10 @@ class Globals {
     public $transferHistory = array();     // [externalUniqueid => ['call_id'=>..., 'externalChannel'=>..., 'currentIntNum'=>..., 'history'=>[]]]
     // Состояние health-check AMI
     public $amiState = array();
+    // Отложенные данные по локальным ногам очередей до получения linkedid
+    public $pendingDialBegin = array(); // [uniqueid => ['event'=>EventMessage,'exten'=>'220', ...]]
+    // Маркеры, что fallback DialBegin уже обработан для uniqueid
+    public $dialBeginProcessed = array(); // [uniqueid => true]
 
     static public function getInstance(){
 		if (null === self::$instance) {
