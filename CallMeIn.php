@@ -1956,34 +1956,37 @@ $pamiClient->registerEventListener(
                 $globalsObj->ringingIntNums[$callLinkedid] = array();
                 $globalsObj->ringOrder[$callLinkedid] = array();
 
-                $registerIntNum = null;
-                $registerUserId = null;
-                if ($selectedIntNum && $selectedUserId) {
-                    $registerIntNum = $selectedIntNum;
-                    $registerUserId = $selectedUserId;
-                } elseif ($fallbackUserInt) {
-                    $registerIntNum = $fallbackUserInt;
-                    $registerUserId = $fallbackUserId ?: null;
-                }
+                $registerUserId = $selectedUserId ?: ($fallbackUserId ?: null);
+                $registrationTarget = $helper->resolveRegistrationTarget(
+                    $selectedIntNum,
+                    $fallbackUserInt,
+                    $exten
+                );
+                $registerIntNum = $registrationTarget['intNum'];
+                $registerIntSource = $registrationTarget['source'];
+                $registerIntAvailable = $registerIntNum !== null;
 
-                $callResult = null;
-                if ($registerIntNum) {
-                    $callResult = $helper->runInputCall(
-                        $registerIntNum,
-                        $extNum,
-                        $exten,
-                        $srmSource,
-                        $registerUserId
-                    );
-                } else {
-                    $helper->writeToLog(array(
-                        'linkedid' => $callLinkedid,
-                        'extNum' => $extNum,
-                        'line' => $exten,
-                        'responsibleUserId' => $responsibleUserId,
-                        'fallbackUserId' => $fallbackUserId,
-                    ), 'Immediate registration skipped: no internal number resolved');
-                }
+                $helper->writeToLog(array(
+                    'linkedid' => $callLinkedid,
+                    'extNum' => $extNum,
+                    'line' => $exten,
+                    'selectedIntNum' => $selectedIntNum,
+                    'fallbackIntNum' => $fallbackUserInt,
+                    'resolvedIntNum' => $registerIntNum,
+                    'resolvedSource' => $registerIntSource,
+                    'hasResolvedInt' => $registerIntAvailable,
+                    'responsibleUserId' => $responsibleUserId,
+                    'fallbackUserId' => $fallbackUserId,
+                    'registerUserId' => $registerUserId,
+                ), 'Resolved registration target');
+
+                $callResult = $helper->runInputCall(
+                    $registerIntNum,
+                    $extNum,
+                    $exten,
+                    $srmSource,
+                    $registerUserId
+                );
 
                 if ($callResult && isset($callResult['CALL_ID'])) {
                     $call_id = $callResult['CALL_ID'];
@@ -1991,8 +1994,8 @@ $pamiClient->registerEventListener(
                     $globalsObj->callIdByLinkedid[$callLinkedid] = $call_id;
                     $globalsObj->callsByCallId[$call_id] = $callLinkedid;
                     $globalsObj->uniqueidToLinkedid[$callLinkedid] = $callLinkedid;
-                    $globalsObj->intNums[$callLinkedid] = $registerIntNum;
-                    if ($registerIntNum) {
+                    if ($registerIntAvailable) {
+                        $globalsObj->intNums[$callLinkedid] = $registerIntNum;
                         $globalsObj->callIdByInt[$registerIntNum] = $call_id;
                     }
 
@@ -2012,6 +2015,8 @@ $pamiClient->registerEventListener(
                         'CALL_ID' => $call_id,
                         'crm_responsible_user_id' => $responsibleUserId,
                         'fallbackUserId' => $fallbackUserId,
+                        'registerSource' => $registerIntSource,
+                        'hasResolvedInt' => $registerIntAvailable,
                     ), 'Immediate call registered on agent');
 
                     if (!empty($call_id) && !empty($CallChannel)) {
@@ -2025,6 +2030,7 @@ $pamiClient->registerEventListener(
                         'responsibleUserId' => $responsibleUserId,
                         'selectedIntNum' => $selectedIntNum,
                         'fallbackIntNum' => $fallbackUserInt,
+                        'registerSource' => $registerIntSource,
                     ), 'Immediate call registration failed');
                 }
 

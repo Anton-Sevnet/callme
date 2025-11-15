@@ -379,14 +379,15 @@ class HelperFuncs {
             $callerid = "8342".$callerid;
         }
         $data = array(
-            'USER_PHONE_INNER' => $exten,
-            //'USER_ID' => $argv[1],
             'PHONE_NUMBER' => "+7".substr($callerid, -10),
             'LINE_NUMBER' => $line,
             'TYPE' => 2,
             'CRM_CREATE' => 1,
             'SHOW' => 0,
         );
+        if ($exten !== null && $exten !== '') {
+            $data['USER_PHONE_INNER'] = $exten;
+        }
         if ($userId !== null) {
             $data['USER_ID'] = (int)$userId;
         } else {
@@ -421,6 +422,59 @@ class HelperFuncs {
             return $value > 0 ? $value : null;
         }
         return null;
+    }
+
+    /**
+     * Преобразовать внутренний номер к цифровому виду.
+     *
+     * @param string|int|null $value
+     * @return string|null
+     */
+    private function sanitizeInternalNumber($value){
+        if ($value === null || $value === false) {
+            return null;
+        }
+        $digits = preg_replace('/\D+/', '', (string)$value);
+        return $digits === '' ? null : $digits;
+    }
+
+    /**
+     * Определить внутренний номер для немедленной регистрации звонка.
+     *
+     * @param string|null $preferredIntNum  Внутренний ответственного пользователя
+     * @param string|null $fallbackIntNum   Внутренний fallback-пользователя
+     * @param string|null $incomingLine     Входящая линия/номер (EXTEN)
+     * @return array{intNum:?string,source:string}
+     */
+    public function resolveRegistrationTarget($preferredIntNum, $fallbackIntNum, $incomingLine = null){
+        $int = $this->sanitizeInternalNumber($preferredIntNum);
+        if ($int !== null) {
+            return array('intNum' => $int, 'source' => 'responsible');
+        }
+
+        $int = $this->sanitizeInternalNumber($fallbackIntNum);
+        if ($int !== null) {
+            return array('intNum' => $int, 'source' => 'fallback_user');
+        }
+
+        $bx24Mapping = $this->getConfig('bx24');
+        if (is_array($bx24Mapping)) {
+            $incomingKey = preg_replace('/\D+/', '', (string)$incomingLine);
+            if ($incomingKey !== '' && !empty($bx24Mapping[$incomingKey])) {
+                $mapped = $this->sanitizeInternalNumber($bx24Mapping[$incomingKey]);
+                if ($mapped !== null) {
+                    return array('intNum' => $mapped, 'source' => 'static_mapping_line');
+                }
+            }
+            if (!empty($bx24Mapping['default'])) {
+                $mappedDefault = $this->sanitizeInternalNumber($bx24Mapping['default']);
+                if ($mappedDefault !== null) {
+                    return array('intNum' => $mappedDefault, 'source' => 'static_mapping_default');
+                }
+            }
+        }
+
+        return array('intNum' => null, 'source' => 'unbound');
     }
 
     /**
