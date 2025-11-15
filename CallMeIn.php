@@ -777,6 +777,10 @@ function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper
         }
     }
 
+    if (!empty($ringStateBefore['agent_uniqueid'])) {
+        callme_unregister_agent_channel($ringStateBefore['agent_uniqueid'], $globalsObj);
+    }
+
     if (isset($globalsObj->ringingIntNums[$linkedid][$intNum])) {
         unset($globalsObj->ringingIntNums[$linkedid][$intNum]);
         if (empty($globalsObj->ringingIntNums[$linkedid])) {
@@ -1800,6 +1804,11 @@ function callme_handle_dial_begin_common(
         }
     }
 
+    $destChannelName = $event->getKey('DestChannel') ?? $event->getKey('Destination') ?? null;
+    if (!empty($destUniqueId) && !empty($destChannelName) && $destChannelName !== '<unknown>') {
+        $globalsObj->agentChannels[$destUniqueId] = $destChannelName;
+    }
+
     $globalsObj->uniqueidToLinkedid[$callUniqueid] = $linkedid;
     if (!empty($destUniqueId)) {
         $globalsObj->uniqueidToLinkedid[$destUniqueId] = $linkedid;
@@ -1960,6 +1969,14 @@ function callme_handle_dial_end_common(
     $globalsObj->uniqueidToLinkedid[$callLinkedid] = $linkedid;
     $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? ($globalsObj->calls[$linkedid] ?? ($globalsObj->calls[$callLinkedid] ?? null));
     $currentIntNum = $globalsObj->intNums[$callLinkedid] ?? null;
+    $ringEntry = null;
+    if ($linkedid && $currentIntNum && isset($globalsObj->ringingIntNums[$linkedid][$currentIntNum])) {
+        $ringEntry = $globalsObj->ringingIntNums[$linkedid][$currentIntNum];
+    }
+    $destUniqueCleanup = $event->getKey('DestUniqueID') ?? $event->getKey('DestUniqueid') ?? null;
+    if ($destUniqueCleanup) {
+        callme_unregister_agent_channel($destUniqueCleanup, $globalsObj);
+    }
 
     if (!$callId) {
         $callId = callme_resolve_call_id($linkedid, $currentIntNum, $globalsObj, $helper);
@@ -2007,6 +2024,9 @@ function callme_handle_dial_end_common(
                 $globalsObj->callCrmData[$linkedid]['answer_int_num'] = $currentIntNum;
             }
             if ($linkedid && $currentIntNum && isset($globalsObj->ringingIntNums[$linkedid][$currentIntNum])) {
+                if (!empty($ringEntry['agent_uniqueid'])) {
+                    callme_unregister_agent_channel($ringEntry['agent_uniqueid'], $globalsObj);
+                }
                 unset($globalsObj->ringingIntNums[$linkedid][$currentIntNum]);
             }
             $globalsObj->Dispositions[$callLinkedid] = 'ANSWER';
@@ -2048,6 +2068,9 @@ function callme_handle_dial_end_common(
                 $helper->hideInputCall($currentIntNum, $callId);
             }
             if ($linkedid && $currentIntNum) {
+                if (!empty($ringEntry['agent_uniqueid'])) {
+                    callme_unregister_agent_channel($ringEntry['agent_uniqueid'], $globalsObj);
+                }
                 unset($globalsObj->callShownCards[$linkedid][$currentIntNum]);
                 unset($globalsObj->ringingIntNums[$linkedid][$currentIntNum]);
                 $activeAfter = isset($globalsObj->ringingIntNums[$linkedid]) ? array_keys($globalsObj->ringingIntNums[$linkedid]) : array();
@@ -2076,6 +2099,9 @@ function callme_handle_dial_end_common(
                 $helper->hideInputCall($currentIntNum, $callId);
             }
             if ($linkedid && $currentIntNum) {
+                if (!empty($ringEntry['agent_uniqueid'])) {
+                    callme_unregister_agent_channel($ringEntry['agent_uniqueid'], $globalsObj);
+                }
                 unset($globalsObj->callShownCards[$linkedid][$currentIntNum]);
                 unset($globalsObj->ringingIntNums[$linkedid][$currentIntNum]);
                 $activeAfter = isset($globalsObj->ringingIntNums[$linkedid]) ? array_keys($globalsObj->ringingIntNums[$linkedid]) : array();
@@ -2107,6 +2133,140 @@ function callme_handle_dial_end_common(
     ), array('ringingIntNums', 'callShownCards', 'callIdByLinkedid', 'ringOrder'));
 }
 
+/**
+ * Принудительно дожимает sub-callme-connectedline для уже созданных каналов.
+ *
+ * @param string $linkedid
+ * @param string $ingressChannel
+ * @param string $callerName
+ * @param HelperFuncs $helper
+ * @param Globals $globalsObj
+ * @param CallAMI $callami
+ * @param callable $setChannelVar
+ * @return void
+ */
+function callme_try_force_connectedline_update(
+    $linkedid,
+    $ingressChannel,
+    $callerName,
+    HelperFuncs $helper,
+    Globals $globalsObj,
+    CallAMI $callami,
+    callable $setChannelVar
+) {
+    if ($linkedid === '' || $callerName === '') {
+        return;
+    }
+
+    $ringMap = $globalsObj->ringingIntNums[$linkedid] ?? array();
+    if (empty($ringMap)) {
+        return;
+    }
+
+    $updates = array();
+    foreach ($ringMap as $intNum => $ringInfo) {
+        $state = strtoupper((string)($ringInfo['state'] ?? ''));
+        if ($state !== '' && $state !== 'RING') {
+            continue;
+        }
+        $agentUniqueId = $ringInfo['agent_uniqueid'] ?? null;
+        if (!$agentUniqueId) {
+            continue;
+        }
+        $targetChannel = $globalsObj->agentChannels[$agentUniqueId] ?? null;
+        if (empty($targetChannel)) {
+            continue;
+        }
+        $lastForced = $ringInfo['connectedline_forced'] ?? null;
+        if ($lastForced === $callerName) {
+            continue;
+        }
+
+        $result = callme_apply_connectedline_update_to_channel(
+            $targetChannel,
+            $callerName,
+            $ingressChannel,
+            $linkedid,
+            $intNum,
+            $agentUniqueId,
+            $helper,
+            $callami,
+            $setChannelVar
+        );
+        if ($result) {
+            $globalsObj->ringingIntNums[$linkedid][$intNum]['connectedline_forced'] = $callerName;
+        }
+        $updates[] = array(
+            'int_num' => $intNum,
+            'agent_uniqueid' => $agentUniqueId,
+            'channel' => $targetChannel,
+            'result' => $result ? 'ok' : 'failed',
+        );
+    }
+
+    if (!empty($updates)) {
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'ingress_channel' => $ingressChannel,
+            'connectedline_name' => $callerName,
+            'targets' => $updates,
+        ), 'ConnectedLine refresh forced');
+    }
+}
+
+/**
+ * Применяет обновление ConnectedLine к конкретному каналу через AMI.
+ *
+ * @return bool
+ */
+function callme_apply_connectedline_update_to_channel(
+    $targetChannel,
+    $callerName,
+    $ingressChannel,
+    $linkedid,
+    $intNum,
+    $agentUniqueId,
+    HelperFuncs $helper,
+    CallAMI $callami,
+    callable $setChannelVar
+) {
+    $label = sprintf('Force ConnectedLine %s', $targetChannel);
+    $ok = true;
+    $ok = $setChannelVar('CALLERID(name)', $callerName, $targetChannel, $label . ' callerid') && $ok;
+    $ok = $setChannelVar('CONNECTEDLINE(name,i)', $callerName, $targetChannel, $label . ' connectedline') && $ok;
+    $ok = $setChannelVar('CONNECTEDLINE(name-pres)', 'allowed_not_screened', $targetChannel, $label . ' presentation') && $ok;
+
+    $callami->SendUserEvent('CallMeConnectedLineUpdate', array(
+        'Linkedid' => $linkedid,
+        'TargetChannel' => $targetChannel,
+        'IntNum' => $intNum,
+        'AgentUniqueid' => $agentUniqueId,
+        'Name' => $callerName,
+        'SourceChannel' => $ingressChannel,
+        'Trigger' => 'forced_refresh',
+    ));
+
+    if (!$ok) {
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'intNum' => $intNum,
+            'channel' => $targetChannel,
+        ), 'ConnectedLine refresh failed');
+    }
+
+    return $ok;
+}
+
+/**
+ * Удаляет сохранённый канал агента по его уникальному идентификатору.
+ */
+function callme_unregister_agent_channel($agentUniqueId, Globals $globalsObj)
+{
+    if ($agentUniqueId && isset($globalsObj->agentChannels[$agentUniqueId])) {
+        unset($globalsObj->agentChannels[$agentUniqueId]);
+    }
+}
+
 //обрабатываем NewchannelEventIncoming события 
 //1. Создание лидов
 //2. Запись звонков
@@ -2124,7 +2284,7 @@ $pamiClient->registerEventListener(
 
 // Диагностическое логирование событий Dial (Asterisk 1.8)
 $pamiClient->registerEventListener(
-            function (EventMessage $event) use ($helper,$callami,$globalsObj,$callmeSetChannelVar){
+            function (EventMessage $event) use ($helper,$callami,$globalsObj){
                 //выгребаем параметры звонка
 
                 $callLinkedid = $event->getKey("Uniqueid");
@@ -2173,6 +2333,15 @@ $pamiClient->registerEventListener(
                         'connectedline_name' => $CallMeCallerIDName,
                         'shared_channel' => $CallChannel ?: null,
                     ), 'Prepared ConnectedLine name for agent');
+                    callme_try_force_connectedline_update(
+                        $callLinkedid,
+                        $CallChannel,
+                        $CallMeCallerIDName,
+                        $helper,
+                        $globalsObj,
+                        $callami,
+                        $callmeSetChannelVar
+                    );
                 }
                 
                 $fallbackUserId = $helper->getFallbackResponsibleUserId();

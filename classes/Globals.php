@@ -22,6 +22,8 @@ class Globals {
     public $ringingIntNums = array(); // [linkedid => ['100' => ['user_id'=>123, 'shown'=>bool, 'state'=>'RING']]]
     //Порядок появления внутренних номеров в состоянии RING
     public $ringOrder = array(); // [linkedid => ['100','101']]
+    //Маппинг agent uniqueid -> фактический канал SIP/...
+    public $agentChannels = array(); // [agent_uniqueid => 'SIP/219-00000123']
     //Направление звонка: inbound/outbound
     public $callDirections = array(); // [linkedid => 'inbound']
     //Тип маршрута вызова (direct/multi) для управления показом карточек
@@ -93,6 +95,7 @@ class Globals {
             'uniqueidToLinkedid' => $this->uniqueidToLinkedid,
             'transferHistory' => $this->transferHistory,
             'amiState' => $this->amiState,
+            'agentChannels' => $this->agentChannels,
         );
 
         $all['_counters'] = array(
@@ -103,6 +106,7 @@ class Globals {
             'originateCalls' => count($this->originateCalls),
             'transferHistory' => count($this->transferHistory),
             'uniqueids' => count($this->uniqueids),
+            'agentChannels' => count($this->agentChannels),
         );
 
         if ($sections === null) {

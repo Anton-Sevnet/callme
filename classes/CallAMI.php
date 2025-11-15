@@ -100,6 +100,7 @@ use PAMI\Message\Action\DongleStopAction;
 use PAMI\Message\Action\DongleResetAction;
 use PAMI\Message\Action\DongleSendUSSDAction;
 use PAMI\Message\Action\DongleSendPDUAction;
+use PAMI\Message\Action\UserEventAction;
 
 class CallAMI {
 
@@ -178,6 +179,27 @@ class CallAMI {
         $getVarMsg = new SetVarAction($var, $value, $channel);
         $pamiClient->open();
         $result = $pamiClient->send($getVarMsg);
+        $pamiClient->close();
+        return $result;
+    }
+
+    /**
+     * Send a UserEvent action with custom headers.
+     *
+     * @param string $eventName
+     * @param array $headers
+     * @return mixed
+     */
+    public function SendUserEvent($eventName, array $headers = array())
+    {
+        $pamiClientOptions = $this->conf;
+        if (!$pamiClientOptions) {
+            return false;
+        }
+        $pamiClient = new PamiClient($pamiClientOptions);
+        $action = new UserEventAction($eventName, $headers);
+        $pamiClient->open();
+        $result = $pamiClient->send($action);
         $pamiClient->close();
         return $result;
     }
