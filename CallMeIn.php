@@ -2284,7 +2284,7 @@ $pamiClient->registerEventListener(
 
 // Диагностическое логирование событий Dial (Asterisk 1.8)
 $pamiClient->registerEventListener(
-            function (EventMessage $event) use ($helper,$callami,$globalsObj){
+            function (EventMessage $event) use ($helper,$callami,$globalsObj,$callmeSetChannelVar){
                 //выгребаем параметры звонка
 
                 $callLinkedid = $event->getKey("Uniqueid");
