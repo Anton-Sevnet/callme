@@ -1058,6 +1058,73 @@ class HelperFuncs {
 	}
 
     /**
+     * Проверяет, включён ли спец. лог состояний переменных.
+     *
+     * @return bool
+     */
+    private function isVariableStateLoggingEnabled() {
+        return (bool)$this->getConfig('variable_state_log_enabled');
+    }
+
+    /**
+     * Возвращает путь к файлу лога состояний.
+     *
+     * @return string
+     */
+    private function resolveVariableStateLogFile() {
+        $configured = $this->getConfig('variable_state_log_file');
+        $path = is_string($configured) && $configured !== ''
+            ? $configured
+            : 'logs/variable_state.log';
+
+        $normalized = str_replace(array('/', '\\'), DIRECTORY_SEPARATOR, $path);
+        if (preg_match('/^[A-Za-z]:\\\\/', $normalized) || strpos($normalized, DIRECTORY_SEPARATOR) === 0) {
+            return $normalized;
+        }
+
+        return rtrim(getcwd(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . ltrim($normalized, DIRECTORY_SEPARATOR);
+    }
+
+    /**
+     * Записывает снапшот массивов/переменных в отдельный лог.
+     *
+     * @param string $title
+     * @param array $payload
+     * @param Globals|null $globalsObj
+     * @return void
+     */
+    public function logVariableState($title, array $payload = array(), $globalsObj = null) {
+        if (!$this->isVariableStateLoggingEnabled()) {
+            return;
+        }
+
+        if (!($globalsObj instanceof Globals)) {
+            $globalsObj = Globals::getInstance();
+        }
+
+        $snapshot = array(
+            'title' => $title !== '' ? $title : 'state snapshot',
+            'timestamp' => date('Y-m-d H:i:s'),
+            'payload' => $payload,
+            'globals' => $globalsObj->exportStateSnapshot(),
+        );
+
+        $logFile = $this->resolveVariableStateLogFile();
+        $dirName = dirname($logFile);
+        if (!is_dir($dirName)) {
+            @mkdir($dirName, 0777, true);
+        }
+
+        $log = "\n========================\n";
+        $log .= $snapshot['timestamp'] . "\n";
+        $log .= $snapshot['title'] . "\n";
+        $log .= print_r($snapshot, true);
+        $log .= "\n========================\n";
+
+        file_put_contents($logFile, $log, FILE_APPEND);
+    }
+
+    /**
      * Проверка включен ли режим детального логирования.
      *
      * @return bool

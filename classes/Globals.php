@@ -69,4 +69,49 @@ class Globals {
 	private function __clone() {}
 	private function __wakeup() {}
 
+    /**
+     * Возвращает срез ключевых массивов состояния для логирования.
+     *
+     * @param array|null $onlyKeys
+     * @return array<string,mixed>
+     */
+    public function exportStateSnapshot(array $onlyKeys = null) {
+        $state = array(
+            'calls' => $this->calls,
+            'callIdByLinkedid' => $this->callIdByLinkedid,
+            'callsByCallId' => $this->callsByCallId,
+            'callCrmData' => $this->callCrmData,
+            'callShownCards' => $this->callShownCards,
+            'ringingIntNums' => $this->ringingIntNums,
+            'ringOrder' => $this->ringOrder,
+            'callDirections' => $this->callDirections,
+            'callIdByInt' => $this->callIdByInt,
+            'callsExternal' => $this->uniqueids,
+            'intNums' => $this->intNums,
+            'Durations' => $this->Durations,
+            'Dispositions' => $this->Dispositions,
+            'originateCalls' => $this->originateCalls,
+            'uniqueidToLinkedid' => $this->uniqueidToLinkedid,
+            'transferHistory' => $this->transferHistory,
+            'Onhold' => $this->Onhold,
+            'Answers' => $this->Answers,
+            'extensions' => $this->extensions,
+            'extentions' => $this->extentions,
+            'user_show_cards' => $this->user_show_cards,
+            'amiState' => $this->amiState,
+        );
+
+        if ($onlyKeys !== null && is_array($onlyKeys) && !empty($onlyKeys)) {
+            $filtered = array();
+            foreach ($onlyKeys as $key) {
+                if (array_key_exists($key, $state)) {
+                    $filtered[$key] = $state[$key];
+                }
+            }
+            return $filtered;
+        }
+
+        return $state;
+    }
+
 }

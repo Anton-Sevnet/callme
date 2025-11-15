@@ -92,6 +92,11 @@ $globalsObj->extentions = $helper->getConfig('extentions');
 
 $globalsObj->user_show_cards = $helper->getConfig('user_show_cards');
 
+callme_state_log('Bootstrap globals data', array(
+    'extentions_count' => is_array($globalsObj->extentions) ? count($globalsObj->extentions) : 0,
+    'user_show_cards_count' => is_array($globalsObj->user_show_cards) ? count($globalsObj->user_show_cards) : 0,
+), $globalsObj);
+
 //создаем экземпляр класса PAMI
 $pamiClient = $callami->NewPAMIClient();
 $pamiClient->open();
@@ -178,6 +183,26 @@ function compute_active_calls_hash($globalsObj)
     }
 
     return md5($encoded);
+}
+
+/**
+ * Унифицированное логирование состояния глобальных массивов.
+ *
+ * @param string $title
+ * @param array $context
+ * @param Globals|null $globalsObj
+ * @return void
+ */
+function callme_state_log($title, array $context = array(), Globals $globalsObj = null)
+{
+    global $helper;
+    if (!isset($helper) || !($helper instanceof HelperFuncs)) {
+        return;
+    }
+    if (!($globalsObj instanceof Globals)) {
+        $globalsObj = Globals::getInstance();
+    }
+    $helper->logVariableState($title, $context, $globalsObj);
 }
 
 function ami_attempt_reconnect($pamiClient, $helper, $globalsObj)
@@ -512,6 +537,12 @@ function callme_clone_call_context($sourceLinkedid, $targetLinkedid, $callId, Gl
     if ($sourceLinkedid && !isset($globalsObj->callDirections[$targetLinkedid]) && isset($globalsObj->callDirections[$sourceLinkedid])) {
         $globalsObj->callDirections[$targetLinkedid] = $globalsObj->callDirections[$sourceLinkedid];
     }
+
+    callme_state_log('Clone call context', array(
+        'sourceLinkedid' => $sourceLinkedid,
+        'targetLinkedid' => $targetLinkedid,
+        'callId' => $callId,
+    ), $globalsObj);
 }
 
 /**
@@ -609,6 +640,13 @@ function callme_hide_cards_batch($linkedid, $call_id, HelperFuncs $helper, Globa
         'result' => $hideResult,
     ), 'Batch hide call cards');
 
+    callme_state_log('Batch hide call cards', array(
+        'linkedid' => $linkedid,
+        'call_id' => $call_id,
+        'targets_count' => count($targets),
+        'hide_result' => $hideResult,
+    ), $globalsObj);
+
     return array('result' => $hideResult, 'targets' => $targets);
 }
 
@@ -687,6 +725,14 @@ function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper
             'activeCallsHash' => compute_active_calls_hash($globalsObj),
         ), 'Ring cleanup without CALL_ID snapshot');
     }
+
+    callme_state_log('Force ring entry cleanup', array(
+        'linkedid' => $linkedid,
+        'intNum' => $intNum,
+        'call_id' => $callId,
+        'hidden' => $hidden,
+        'context' => $context,
+    ), $globalsObj);
 
     return array(
         'call_id' => $callId,

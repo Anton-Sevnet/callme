@@ -93,5 +93,9 @@ return array(
     
     // Full event log (logs ALL events to full.log, very verbose)
     'enable_full_log' => false,
+
+    // Extended variable/memory snapshots log
+    'variable_state_log_enabled' => true,
+    'variable_state_log_file' => 'logs/variable_state.log',
 );
 
