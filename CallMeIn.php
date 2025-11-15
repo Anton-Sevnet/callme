@@ -100,6 +100,73 @@ if (!function_exists('callme_maybe_unset_route_type')) {
     }
 }
 
+if (!function_exists('callme_infer_route_type_from_event')) {
+    /**
+     * Пытается определить тип маршрута (direct/multi) по данным события Dial.
+     *
+     * @param \PAMI\Message\Event\EventMessage|null $event
+     * @param string|null $intNum
+     * @return string 'direct'|'multi'
+     */
+    function callme_infer_route_type_from_event($event, $intNum = null)
+    {
+        if (!($event instanceof \PAMI\Message\Event\EventMessage)) {
+            return 'direct';
+        }
+
+        $queueHints = array(
+            strtolower((string)$event->getKey('Context')),
+            strtolower((string)$event->getKey('DestContext')),
+            strtolower((string)$event->getKey('CallerContext')),
+        );
+        foreach ($queueHints as $hint) {
+            if ($hint === '') {
+                continue;
+            }
+            if (strpos($hint, 'from-queue') !== false ||
+                strpos($hint, 'ext-queues') !== false ||
+                strpos($hint, 'from-ringgroup') !== false ||
+                strpos($hint, 'from-ringgroups') !== false ||
+                strpos($hint, 'app_queue') !== false) {
+                return 'multi';
+            }
+        }
+
+        $channels = array(
+            strtolower((string)$event->getKey('Channel')),
+            strtolower((string)$event->getKey('DestChannel')),
+            strtolower((string)$event->getKey('Destination')),
+        );
+        foreach ($channels as $channel) {
+            if ($channel === '') {
+                continue;
+            }
+            if (strpos($channel, 'local/') === 0 &&
+                (strpos($channel, '@from-queue') !== false ||
+                    strpos($channel, '@from-ringgroup') !== false ||
+                    strpos($channel, '@from-ringgroups') !== false)) {
+                return 'multi';
+            }
+        }
+
+        $dialString = strtolower((string)($event->getKey('Dialstring') ?? $event->getKey('DialString') ?? ''));
+        if ($dialString !== '' &&
+            strpos($dialString, 'local/') !== false &&
+            (strpos($dialString, '@from-queue') !== false ||
+                strpos($dialString, '@from-ringgroup') !== false ||
+                strpos($dialString, '@from-ringgroups') !== false)) {
+            return 'multi';
+        }
+
+        $callerId = strtolower((string)$event->getKey('CallerIDName'));
+        if ($callerId !== '' && strpos($callerId, 'queue') !== false) {
+            return 'multi';
+        }
+
+        return 'direct';
+    }
+}
+
 /*
 * start: for events listener
 */
@@ -1772,6 +1839,16 @@ function callme_handle_dial_begin_common(
     if (empty($routeType) && isset($globalsObj->callRouteTypes[$linkedidOriginal])) {
         $routeType = $globalsObj->callRouteTypes[$linkedidOriginal];
     }
+    $inferredRoute = callme_infer_route_type_from_event($event, $exten);
+    if ($routeType === 'direct' && $inferredRoute === 'multi') {
+        $routeType = 'multi';
+    }
+    if ($routeType !== 'direct') {
+        $globalsObj->callRouteTypes[$linkedid] = $routeType;
+        if ($linkedidOriginal && !isset($globalsObj->callRouteTypes[$linkedidOriginal])) {
+            $globalsObj->callRouteTypes[$linkedidOriginal] = $routeType;
+        }
+    }
     if (empty($existingEntry['user_id'])) {
         $existingEntry['user_id'] = $helper->getUSER_IDByIntNum($exten);
     }
@@ -1811,6 +1888,14 @@ function callme_handle_dial_begin_common(
         }
     }
     if ($hasUnshownRinging) {
+        if ($routeType !== 'direct') {
+            $helper->writeToLog(array(
+                'linkedid' => $linkedid,
+                'intNum' => $exten,
+                'route_type' => $routeType,
+                'dialString' => $rawDialString,
+            ), 'DialBegin fallback show (multi route)');
+        }
         callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
     }
 
@@ -3102,11 +3187,11 @@ $pamiClient->registerEventListener(
 // 1. VarSetEvent (CallMeLINKEDID) - фиксируем маппинг UniqueID ↔ linkedid
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
-        $uniqueid = $event->getKey("Uniqueid");
-        $linkedid = $event->getValue(); // Значение переменной = Linkedid
+        $uniqueid = (string)$event->getKey("Uniqueid");
+        $linkedid = (string)$event->getValue(); // Значение переменной = Linkedid
         $channel = $event->getChannel();
 
-        if (empty($uniqueid) || empty($linkedid)) {
+        if ($uniqueid === '' || $linkedid === '') {
             return;
         }
 
@@ -3122,8 +3207,15 @@ $pamiClient->registerEventListener(
         ], 'LINKEDID: Mapping updated');
     },
     function (EventMessage $event) {
-        return $event instanceof VarSetEvent
-            && $event->getVariableName() === 'CallMeLINKEDID';
+        if (!($event instanceof VarSetEvent)) {
+            return false;
+        }
+        $varName = (string)$event->getVariableName();
+        if ($varName === '') {
+            return false;
+        }
+        $normalized = ltrim($varName, '_');
+        return strcasecmp($normalized, 'CallMeLINKEDID') === 0;
     }
 );
 
