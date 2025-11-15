@@ -24,6 +24,8 @@ class Globals {
     public $ringOrder = array(); // [linkedid => ['100','101']]
     //Направление звонка: inbound/outbound
     public $callDirections = array(); // [linkedid => 'inbound']
+    //Тип маршрута вызова (direct/multi) для управления показом карточек
+    public $callRouteTypes = array(); // [linkedid => 'direct']
     //Текущий Call ID, закреплённый за внутренними номерами (для быстрого доступа при событиях AMI)
     public $callIdByInt = array(); // ['100' => CALL_ID]
     //Обратный маппинг CALL_ID -> Uniqueid (fallback при переносах)
