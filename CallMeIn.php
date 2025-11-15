@@ -129,6 +129,66 @@ $callami = new CallAMI();
 //объект с глобальными массивами
 $globalsObj = Globals::getInstance();
 
+$callmeSetChannelVar = function ($varName, $value, $channel, $contextLabel = '') use ($callami, $helper) {
+    if (empty($channel)) {
+        $helper->writeToLog(array(
+            'var' => $varName,
+            'value' => $value,
+            'context' => $contextLabel,
+            'reason' => 'empty_channel'
+        ), 'SetVar skipped');
+        return false;
+    }
+
+    $attempt = 0;
+    $maxAttempts = 3;
+    while ($attempt < $maxAttempts) {
+        $attempt++;
+        try {
+            $result = $callami->SetVar($varName, $value, $channel);
+            $isSuccess = false;
+            if ($result !== false) {
+                if (is_object($result) && method_exists($result, 'isSuccess')) {
+                    $isSuccess = $result->isSuccess();
+                } else {
+                    $isSuccess = true;
+                }
+            }
+            if ($isSuccess) {
+                return true;
+            }
+        } catch (\Throwable $throwable) {
+            $helper->writeToLog(array(
+                'var' => $varName,
+                'value' => $value,
+                'channel' => $channel,
+                'context' => $contextLabel,
+                'attempt' => $attempt,
+                'error' => $throwable->getMessage()
+            ), 'SetVar exception');
+        }
+
+        $helper->writeToLog(array(
+            'var' => $varName,
+            'value' => $value,
+            'channel' => $channel,
+            'context' => $contextLabel,
+            'attempt' => $attempt
+        ), 'SetVar retry');
+
+        usleep(100000);
+    }
+
+    $helper->writeToLog(array(
+        'var' => $varName,
+        'value' => $value,
+        'channel' => $channel,
+        'context' => $contextLabel,
+        'attempts' => $maxAttempts
+    ), 'SetVar failed');
+    return false;
+};
+
 //массив внешних номеров
 $globalsObj->extentions = $helper->getConfig('extentions');
 
@@ -2100,12 +2160,12 @@ $pamiClient->registerEventListener(
                 ), 'CRM entity data by phone');
                                                
                 // выставим CallerID 
-                $callami->SetVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel);
+                $callmeSetChannelVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel, 'Set CRM caller name');
                 if (!empty($CallMeCallerIDName)) {
-                    $callami->SetVar("__CALLME_CONNECTEDLINE_NAME", $CallMeCallerIDName, $CallChannel);
+                    $callmeSetChannelVar("__CALLME_CONNECTEDLINE_NAME", $CallMeCallerIDName, $CallChannel, 'Set CRM connected line');
                     if (!empty($CallChannel)) {
-                        $callami->SetVar(sprintf("SHARED(CALLME_CL_NAME,%s)", $CallChannel), $CallMeCallerIDName, $CallChannel);
-                        $callami->SetVar("__CALLME_INGRESS_CHANNEL", $CallChannel, $CallChannel);
+                        $callmeSetChannelVar(sprintf("SHARED(CALLME_CL_NAME,%s)", $CallChannel), $CallMeCallerIDName, $CallChannel, 'Set shared CRM name');
+                        $callmeSetChannelVar("__CALLME_INGRESS_CHANNEL", $CallChannel, $CallChannel, 'Set ingress channel');
                     }
                     $helper->writeToLog(array(
                         'linkedid' => $callLinkedid,
@@ -2204,6 +2264,7 @@ $pamiClient->registerEventListener(
                         'initial_responsible_user_id' => $registerUserId,
                         'current_responsible_user_id' => $registerUserId,
                         'crm_responsible_user_id' => $responsibleUserId,
+                        'responsible_int_num' => $registerIntNum,
                     );
 
                     $helper->writeToLog(array(
@@ -2218,7 +2279,7 @@ $pamiClient->registerEventListener(
                     ), 'Immediate call registered on agent');
 
                     if (!empty($call_id) && !empty($CallChannel)) {
-                        $callami->SetVar('CALLME_CALL_ID', $call_id, $CallChannel);
+                        $callmeSetChannelVar('CALLME_CALL_ID', $call_id, $CallChannel, 'Bind CALL_ID to channel');
                     }
                 } else {
                     $helper->writeToLog(array(
@@ -3044,6 +3105,9 @@ $pamiClient->registerEventListener(
                 }
                 if (!$finishIntNum && $linkedid && !empty($globalsObj->callCrmData[$linkedid]['answer_int_num'])) {
                     $finishIntNum = (string)$globalsObj->callCrmData[$linkedid]['answer_int_num'];
+                }
+                if (!$finishIntNum && $linkedid && !empty($globalsObj->callCrmData[$linkedid]['responsible_int_num'])) {
+                    $finishIntNum = (string)$globalsObj->callCrmData[$linkedid]['responsible_int_num'];
                 }
                 if ($primaryTarget) {
                     $finishIntNum = $primaryTarget['int_num'] ?? $finishIntNum;
