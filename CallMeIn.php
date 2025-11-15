@@ -660,6 +660,13 @@ function callme_hide_cards_batch($linkedid, $call_id, HelperFuncs $helper, Globa
         callme_maybe_unset_route_type($linkedid, $globalsObj);
     }
 
+    $helper->logGlobalsState('callme_hide_cards_batch', $globalsObj, array(
+        'linkedid' => $linkedid,
+        'call_id' => $call_id,
+        'targets' => $targets,
+        'excludeIntNum' => $excludeIntNum,
+    ), array('callShownCards', 'ringingIntNums', 'callRouteTypes'));
+
     return array('result' => $hideResult, 'targets' => $targets);
 }
 
@@ -757,6 +764,14 @@ function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper
     }
 
     callme_maybe_unset_route_type($linkedid, $globalsObj);
+
+    $helper->logGlobalsState('callme_force_ring_entry_cleanup', $globalsObj, array_merge($context, array(
+        'linkedid' => $linkedid,
+        'intNum' => $intNum,
+        'call_id' => $callId,
+        'route_type' => $routeType,
+        'hidden' => $hidden,
+    )), array('ringingIntNums', 'callShownCards', 'ringOrder'));
 
     return array(
         'call_id' => $callId,
@@ -882,6 +897,14 @@ function callme_transfer_move_card($linkedid, $callId, $fromIntNum, $toIntNum, H
             'toIntNum' => $toIntNum,
         )), 'TRANSFER: Card moved');
     }
+
+    $helper->logGlobalsState('callme_transfer_move_card', $globalsObj, array_merge($context, array(
+        'linkedid' => $targetLinkedid,
+        'sourceLinkedid' => $sourceLinkedid,
+        'call_id' => $callId,
+        'fromIntNum' => $fromIntNum,
+        'toIntNum' => $toIntNum,
+    )), array('ringingIntNums', 'callShownCards', 'ringOrder'));
 }
 
 $pamiClient->registerEventListener(
@@ -1230,6 +1253,15 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
     ), 'UserEvent CallMeRingingStart');
 
     callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
+
+    $helper->logGlobalsState('CallMeRingingStart', $globalsObj, array(
+        'linkedid' => $linkedid,
+        'intNum' => $intNum,
+        'call_id' => $callId,
+        'agentUniqueid' => $agentUniqueId,
+        'route_type' => $routeType,
+        'direction' => $direction,
+    ), array('ringingIntNums', 'callShownCards', 'ringOrder', 'callIdByLinkedid'));
 }
 
 /**
@@ -1388,6 +1420,15 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
             unset($globalsObj->ringOrder[$linkedid]);
         }
     }
+
+    $helper->logGlobalsState('CallMeRingingAnswer', $globalsObj, array(
+        'linkedid' => $linkedid,
+        'intNum' => $intNum,
+        'call_id' => $callId,
+        'agentUniqueid' => $agentUniqueId,
+        'route_type' => $routeType,
+        'direction' => $direction,
+    ), array('ringingIntNums', 'callShownCards', 'callIdByLinkedid'));
 }
 
 /**
@@ -1538,6 +1579,15 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
         'route_type' => $routeType,
         'cleanupOnStop' => $cleanupOnStop,
     ), 'UserEvent CallMeRingingStop');
+
+    $helper->logGlobalsState('CallMeRingingStop', $globalsObj, array(
+        'linkedid' => $linkedid,
+        'intNum' => $intNum,
+        'call_id' => $callId,
+        'dialStatus' => $dialStatus,
+        'cleanupOnStop' => $cleanupOnStop,
+        'route_type' => $routeType,
+    ), array('ringingIntNums', 'callShownCards', 'callIdByLinkedid'));
 }
 
 /**
@@ -1820,6 +1870,15 @@ function callme_handle_dial_begin_common(
     if ($linkedid && !isset($globalsObj->intNums[$linkedid]) && $call_id) {
         $globalsObj->intNums[$linkedid] = $exten;
     }
+
+    $helper->logGlobalsState('DialBeginCommon', $globalsObj, array(
+        'linkedid' => $linkedid,
+        'uniqueid' => $callUniqueid,
+        'destUniqueId' => $destUniqueId,
+        'exten' => $exten,
+        'call_id' => $call_id,
+        'caller' => $callerNumberRaw,
+    ), array('ringingIntNums', 'ringOrder', 'callIdByLinkedid', 'callShownCards'));
 }
 
 /**
@@ -1978,6 +2037,14 @@ function callme_handle_dial_end_common(
     if ($globalsObj->Dispositions[$callLinkedid] === 'ANSWER') {
         $globalsObj->Dispositions[$callLinkedid] = "ANSWERED";
     }
+
+    $helper->logGlobalsState('DialEndCommon', $globalsObj, array(
+        'linkedid' => $linkedid,
+        'uniqueid' => $callLinkedid,
+        'currentIntNum' => $currentIntNum,
+        'call_id' => $callId,
+        'dialStatus' => $event->getDialStatus(),
+    ), array('ringingIntNums', 'callShownCards', 'callIdByLinkedid', 'ringOrder'));
 }
 
 //обрабатываем NewchannelEventIncoming события 

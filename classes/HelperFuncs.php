@@ -1134,6 +1134,78 @@ class HelperFuncs {
         $this->writeToLog($data, $title);
     }
 
+    /**
+     * Проверка включено ли спец. логирование состояний переменных.
+     *
+     * @return bool
+     */
+    private function isVariableStateLogEnabled() {
+        return (bool)$this->getConfig('variable_state_log_enabled');
+    }
+
+    /**
+     * Возвращает абсолютный путь к файлу логирования состояний.
+     *
+     * @return string
+     */
+    private function getVariableStateLogPath() {
+        $file = $this->getConfig('variable_state_log_file');
+        if (!is_string($file) || trim($file) === '') {
+            $file = 'logs/variable_state.log';
+        }
+        $file = str_replace(array('/', '\\'), DIRECTORY_SEPARATOR, $file);
+        $path = rtrim(getcwd(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . ltrim($file, DIRECTORY_SEPARATOR);
+        $dir = dirname($path);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+        return $path;
+    }
+
+    /**
+     * Записывает информацию о состоянии переменных в отдельный лог.
+     *
+     * @param string $title
+     * @param array $payload
+     * @return void
+     */
+    public function logVariableState($title, array $payload = array()) {
+        if (!$this->isVariableStateLogEnabled()) {
+            return;
+        }
+        $log = "\n========================\n";
+        $log .= date('Y.m.d H:i:s') . " | " . $title . "\n";
+        if (!empty($payload)) {
+            $log .= print_r($payload, true);
+        }
+        $log .= "========================\n";
+        file_put_contents($this->getVariableStateLogPath(), $log, FILE_APPEND);
+    }
+
+    /**
+     * Сохраняет снимок состояния глобальных массивов в лог, если это разрешено конфигурацией.
+     *
+     * @param string $title
+     * @param Globals $globalsObj
+     * @param array $context
+     * @param array|null $sections
+     * @return void
+     */
+    public function logGlobalsState($title, Globals $globalsObj, array $context = array(), array $sections = null) {
+        if (!$this->isVariableStateLogEnabled()) {
+            return;
+        }
+        $snapshot = method_exists($globalsObj, 'getStateSnapshot')
+            ? $globalsObj->getStateSnapshot($sections)
+            : array();
+        $payload = array(
+            'context' => $context,
+            'snapshot' => $snapshot,
+            'memory_usage' => memory_get_usage(true),
+        );
+        $this->logVariableState($title, $payload);
+    }
+
 	public function logAmiHealth($channel, $level, $message, array $context = array()) {
 		$config = $this->getConfig('ami_healthcheck_log');
 		if (!is_array($config)) {

@@ -60,6 +60,69 @@ class Globals {
     // Состояние health-check AMI
     public $amiState = array();
 
+    /**
+     * Возвращает снимок ключевых массивов/переменных для диагностического логирования.
+     *
+     * @param array|null $sections Список ключей, которые нужно включить в снимок.
+     * @return array
+     */
+    public function getStateSnapshot(array $sections = null)
+    {
+        $all = array(
+            'calls' => $this->calls,
+            'callIdByLinkedid' => $this->callIdByLinkedid,
+            'callCrmData' => $this->callCrmData,
+            'callShownCards' => $this->callShownCards,
+            'ringingIntNums' => $this->ringingIntNums,
+            'ringOrder' => $this->ringOrder,
+            'callDirections' => $this->callDirections,
+            'callRouteTypes' => $this->callRouteTypes,
+            'callIdByInt' => $this->callIdByInt,
+            'callsByCallId' => $this->callsByCallId,
+            'uniqueids' => $this->uniqueids,
+            'FullFnameUrls' => $this->FullFnameUrls,
+            'intNums' => $this->intNums,
+            'Durations' => $this->Durations,
+            'Dispositions' => $this->Dispositions,
+            'extensions' => $this->extensions,
+            'extentions' => $this->extentions,
+            'user_show_cards' => $this->user_show_cards,
+            'Onhold' => $this->Onhold,
+            'Answers' => $this->Answers,
+            'originateCalls' => $this->originateCalls,
+            'uniqueidToLinkedid' => $this->uniqueidToLinkedid,
+            'transferHistory' => $this->transferHistory,
+            'amiState' => $this->amiState,
+        );
+
+        $all['_counters'] = array(
+            'calls' => count($this->calls),
+            'callIdByLinkedid' => count($this->callIdByLinkedid),
+            'ringingIntNums' => count($this->ringingIntNums),
+            'callShownCards' => count($this->callShownCards),
+            'originateCalls' => count($this->originateCalls),
+            'transferHistory' => count($this->transferHistory),
+            'uniqueids' => count($this->uniqueids),
+        );
+
+        if ($sections === null) {
+            return $all;
+        }
+
+        $snapshot = array();
+        foreach ($sections as $key) {
+            if (array_key_exists($key, $all)) {
+                $snapshot[$key] = $all[$key];
+            }
+        }
+
+        if (!isset($snapshot['_counters'])) {
+            $snapshot['_counters'] = $all['_counters'];
+        }
+
+        return $snapshot;
+    }
+
     static public function getInstance(){
 		if (null === self::$instance) {
 			self::$instance = new self();
