@@ -58,6 +58,48 @@ if (!function_exists('callme_channel_base')) {
     }
 }
 
+if (!function_exists('callme_normalize_route_type')) {
+    /**
+     * Приводит тип маршрута звонка к одному из известных значений.
+     *
+     * @param string|null $routeType
+     * @return string 'direct'|'multi'
+     */
+    function callme_normalize_route_type($routeType)
+    {
+        $value = strtolower(trim((string)$routeType));
+        if ($value === '') {
+            return 'direct';
+        }
+
+        $multiAliases = array('queue', 'ring_group', 'ringgroup', 'multi', 'multiagent', 'group', 'multi_exten', 'multi-route');
+        if (in_array($value, $multiAliases, true)) {
+            return 'multi';
+        }
+
+        return 'direct';
+    }
+}
+
+if (!function_exists('callme_maybe_unset_route_type')) {
+    /**
+     * Удаляет сохранённый тип маршрута, если для linkedid не осталось активных состояний.
+     *
+     * @param string $linkedid
+     * @param Globals $globalsObj
+     * @return void
+     */
+    function callme_maybe_unset_route_type($linkedid, Globals $globalsObj)
+    {
+        if ($linkedid === '') {
+            return;
+        }
+        if (!isset($globalsObj->ringingIntNums[$linkedid]) && !isset($globalsObj->callShownCards[$linkedid])) {
+            unset($globalsObj->callRouteTypes[$linkedid]);
+        }
+    }
+}
+
 /*
 * start: for events listener
 */
@@ -668,6 +710,24 @@ function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper
 
     $callId = callme_resolve_call_id($linkedid, $intNum, $globalsObj, $helper);
     $ringStateBefore = $globalsObj->ringingIntNums[$linkedid][$intNum] ?? null;
+    $routeType = $ringStateBefore['route_type'] ?? ($globalsObj->callRouteTypes[$linkedid] ?? 'direct');
+    $ringStateLabel = strtoupper((string)($ringStateBefore['state'] ?? ''));
+    if ($routeType !== 'direct' && $ringStateLabel === 'RING' && empty($ringStateBefore['shown'])) {
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'intNum' => $intNum,
+            'route_type' => $routeType,
+            'ringState' => $ringStateLabel,
+            'context' => $context,
+        ), 'Skip force cleanup for multi-route ringing leg');
+        callme_state_log('Skip force ring cleanup (multi)', array(
+            'linkedid' => $linkedid,
+            'intNum' => $intNum,
+            'route_type' => $routeType,
+            'context' => $context,
+        ), $globalsObj);
+        return false;
+    }
     $hidden = false;
 
     if ($callId && callme_is_card_marked_shown($linkedid, $intNum, $globalsObj)) {
@@ -713,6 +773,7 @@ function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper
         'linkedid' => $linkedid,
         'intNum' => $intNum,
         'call_id' => $callId,
+        'route_type' => $routeType,
         'hidden' => $hidden,
     ), $context), 'Forced ring entry cleanup');
 
@@ -730,9 +791,12 @@ function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper
         'linkedid' => $linkedid,
         'intNum' => $intNum,
         'call_id' => $callId,
+        'route_type' => $routeType,
         'hidden' => $hidden,
         'context' => $context,
     ), $globalsObj);
+
+    callme_maybe_unset_route_type($linkedid, $globalsObj);
 
     return array(
         'call_id' => $callId,
@@ -1091,6 +1155,13 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
 
     $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
     $direction = (string) ($event->getKey('Direction') ?? 'inbound');
+    $routeTypeRaw = (string) ($event->getKey('RouteType') ?? '');
+    $routeType = callme_normalize_route_type($routeTypeRaw);
+    if ($routeTypeRaw !== '') {
+        $globalsObj->callRouteTypes[$linkedid] = $routeType;
+    } elseif (isset($globalsObj->callRouteTypes[$linkedid])) {
+        $routeType = $globalsObj->callRouteTypes[$linkedid];
+    }
 
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
         $globalsObj->ringingIntNums[$linkedid] = array();
@@ -1102,6 +1173,10 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
     }
     $ringEntry['agent_uniqueid'] = $agentUniqueId ?: ($ringEntry['agent_uniqueid'] ?? null);
     $ringEntry['direction'] = $direction ?: ($ringEntry['direction'] ?? 'inbound');
+    $ringEntry['route_type'] = $routeType;
+    if ($routeTypeRaw !== '') {
+        $ringEntry['route_type_raw'] = $routeTypeRaw;
+    }
     $ringEntry['state'] = 'RING';
     $ringEntry['timestamp'] = time();
     $ringEntry['shown'] = callme_is_card_marked_shown($linkedid, $intNum, $globalsObj);
@@ -1179,6 +1254,7 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
         'agentUniqueid' => $agentUniqueId,
         'direction' => $direction,
         'call_id' => $callId,
+        'route_type' => $routeType,
         'ringOrder' => $globalsObj->ringOrder[$linkedid],
         'alreadyShown' => $ringEntry['shown'],
     ), 'UserEvent CallMeRingingStart');
@@ -1209,6 +1285,13 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
 
     $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
     $direction = (string) ($event->getKey('Direction') ?? 'inbound');
+    $routeTypeRaw = (string) ($event->getKey('RouteType') ?? '');
+    $routeType = callme_normalize_route_type($routeTypeRaw);
+    if ($routeTypeRaw !== '') {
+        $globalsObj->callRouteTypes[$linkedid] = $routeType;
+    } elseif (isset($globalsObj->callRouteTypes[$linkedid])) {
+        $routeType = $globalsObj->callRouteTypes[$linkedid];
+    }
 
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
         $globalsObj->ringingIntNums[$linkedid] = array();
@@ -1225,6 +1308,10 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
     }
     $entry['agent_uniqueid'] = $agentUniqueId ?: ($entry['agent_uniqueid'] ?? null);
     $entry['direction'] = $direction ?: ($entry['direction'] ?? 'inbound');
+    $entry['route_type'] = $routeType;
+    if ($routeTypeRaw !== '') {
+        $entry['route_type_raw'] = $routeTypeRaw;
+    }
     $entry['state'] = 'ANSWER';
     $entry['timestamp'] = time();
     $entry['answered'] = true;
@@ -1296,6 +1383,7 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
         'agentUniqueid' => $agentUniqueId,
         'direction' => $direction,
         'call_id' => $callId,
+        'route_type' => $routeType,
     ), 'UserEvent CallMeRingingAnswer');
 
     if ($callId) {
@@ -1356,6 +1444,13 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
     $dialStatusRaw = (string) ($event->getKey('DialStatus') ?? '');
     $dialStatus = strtoupper(trim($dialStatusRaw));
     $cleanupOnStop = !in_array($dialStatus, array('ANSWER', 'ANSWERED'), true);
+    $routeTypeRaw = (string) ($event->getKey('RouteType') ?? '');
+    $routeType = callme_normalize_route_type($routeTypeRaw);
+    if ($routeTypeRaw !== '') {
+        $globalsObj->callRouteTypes[$linkedid] = $routeType;
+    } elseif (isset($globalsObj->callRouteTypes[$linkedid])) {
+        $routeType = $globalsObj->callRouteTypes[$linkedid];
+    }
 
     $eventCallId = trim((string) ($event->getKey('CallId') ?? $event->getKey('CALLID') ?? ''));
     $callId = $eventCallId !== '' ? $eventCallId : null;
@@ -1456,6 +1551,8 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
         $globalsObj->ringingIntNums[$linkedid][$intNum]['timestamp'] = time();
     }
 
+    callme_maybe_unset_route_type($linkedid, $globalsObj);
+
     $helper->writeToLog(array(
         'event' => 'CallMeRingingStop',
         'linkedid' => $linkedid,
@@ -1463,6 +1560,7 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
         'dialStatus' => $dialStatusRaw,
         'call_id' => $callId,
         'agentUniqueid' => $agentUniqueId,
+        'route_type' => $routeType,
         'cleanupOnStop' => $cleanupOnStop,
     ), 'UserEvent CallMeRingingStop');
 }
@@ -1670,11 +1768,18 @@ function callme_handle_dial_begin_common(
     }
 
     $existingEntry = $globalsObj->ringingIntNums[$linkedid][$exten] ?? array();
+    $routeType = $globalsObj->callRouteTypes[$linkedid] ?? 'direct';
+    if (empty($routeType) && isset($globalsObj->callRouteTypes[$linkedidOriginal])) {
+        $routeType = $globalsObj->callRouteTypes[$linkedidOriginal];
+    }
     if (empty($existingEntry['user_id'])) {
         $existingEntry['user_id'] = $helper->getUSER_IDByIntNum($exten);
     }
     $existingEntry['timestamp'] = time();
     $existingEntry['state'] = 'RING';
+    if (empty($existingEntry['route_type'])) {
+        $existingEntry['route_type'] = $routeType ?: 'direct';
+    }
     if (!empty($destUniqueId)) {
         $existingEntry['agent_uniqueid'] = $destUniqueId;
     }
