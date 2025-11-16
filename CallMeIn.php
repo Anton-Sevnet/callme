@@ -1641,6 +1641,72 @@ function callme_resolve_call_id($linkedid, $intNum, Globals $globalsObj, HelperF
 }
 
 /**
+ * Универсальная функция поиска URL записи звонка.
+ * Ищет URL по linkedid (приоритет) или uniqueid (fallback).
+ *
+ * @param string|null $uniqueid
+ * @param string|null $linkedid
+ * @param Globals $globalsObj
+ * @param HelperFuncs $helper
+ * @return string|null URL записи или null если не найден
+ */
+function callme_resolve_recording_url($uniqueid, $linkedid, Globals $globalsObj, HelperFuncs $helper)
+{
+    $candidateUniqueid = $uniqueid !== null ? (string)$uniqueid : '';
+    $candidateLinkedid = $linkedid !== null ? (string)$linkedid : '';
+    
+    // Если linkedid не передан, пытаемся найти через маппинг
+    if ($candidateLinkedid === '' && $candidateUniqueid !== '') {
+        $candidateLinkedid = (string)($globalsObj->uniqueidToLinkedid[$candidateUniqueid] ?? '');
+    }
+    
+    $foundUrl = null;
+    $foundBy = null;
+    
+    // ПРИОРИТЕТ 1: Поиск по linkedid (основной способ)
+    if ($candidateLinkedid !== '' && isset($globalsObj->FullFnameUrls[$candidateLinkedid])) {
+        $foundUrl = $globalsObj->FullFnameUrls[$candidateLinkedid];
+        $foundBy = 'linkedid';
+    }
+    
+    // ПРИОРИТЕТ 2: Поиск по uniqueid (fallback для обратной совместимости)
+    if ($foundUrl === null && $candidateUniqueid !== '' && isset($globalsObj->FullFnameUrls[$candidateUniqueid])) {
+        $foundUrl = $globalsObj->FullFnameUrls[$candidateUniqueid];
+        $foundBy = 'uniqueid';
+    }
+    
+    // ПРИОРИТЕТ 3: Глубокий поиск - ищем по всем uniqueid, связанным с linkedid
+    if ($foundUrl === null && $candidateLinkedid !== '') {
+        foreach ($globalsObj->uniqueidToLinkedid as $uid => $mappedLinkedid) {
+            if ($mappedLinkedid === $candidateLinkedid && isset($globalsObj->FullFnameUrls[$uid])) {
+                $foundUrl = $globalsObj->FullFnameUrls[$uid];
+                $foundBy = 'deep_search_uniqueid';
+                break;
+            }
+        }
+    }
+    
+    // Логирование результата поиска
+    if ($foundUrl !== null) {
+        $helper->writeToLog(array(
+            'uniqueid' => $candidateUniqueid,
+            'linkedid' => $candidateLinkedid,
+            'found_by' => $foundBy,
+            'url' => $foundUrl,
+        ), 'Recording URL resolved');
+    } else {
+        $helper->writeToLog(array(
+            'uniqueid' => $candidateUniqueid,
+            'linkedid' => $candidateLinkedid,
+            'has_linkedid_mapping' => $candidateLinkedid !== '' && isset($globalsObj->uniqueidToLinkedid[$candidateUniqueid]),
+            'available_keys' => array_keys($globalsObj->FullFnameUrls ?? array()),
+        ), 'Recording URL NOT found');
+    }
+    
+    return $foundUrl;
+}
+
+/**
  * Общий обработчик начала дозвона по внутреннему номеру.
  *
  * @param EventMessage $event
@@ -2561,10 +2627,46 @@ $pamiClient->registerEventListener(
             return;
         }
 
-        if ($variableName === 'CallMeFULLFNAME'
-            && !isset($globalsObj->FullFnameUrls[$callUniqueid])) {
+        if ($variableName === 'CallMeFULLFNAME') {
             $relativePath = $rawValue;
-            $globalsObj->FullFnameUrls[$callUniqueid] = "http://195.98.170.206/continuous/" . $relativePath;
+            $fullUrl = "http://195.98.170.206/continuous/" . $relativePath;
+            
+            // Определяем linkedid для сохранения (приоритет: из маппинга, затем из события)
+            $targetLinkedid = $linkedid ?: $callUniqueid;
+            
+            // ПРИОРИТЕТ 1: Сохраняем по linkedid (основной способ для transfer)
+            if ($linkedid && $linkedid !== $callUniqueid) {
+                // Если URL еще не сохранен по linkedid - сохраняем
+                if (!isset($globalsObj->FullFnameUrls[$linkedid])) {
+                    $globalsObj->FullFnameUrls[$linkedid] = $fullUrl;
+                    $helper->writeToLog(array(
+                        'uniqueid' => $callUniqueid,
+                        'linkedid' => $linkedid,
+                        'url' => $fullUrl,
+                        'saved_by' => 'linkedid'
+                    ), 'CallMeFULLFNAME saved by linkedid');
+                } else {
+                    // URL уже сохранен по linkedid - логируем, но не перезаписываем
+                    $helper->writeToLog(array(
+                        'uniqueid' => $callUniqueid,
+                        'linkedid' => $linkedid,
+                        'existing_url' => $globalsObj->FullFnameUrls[$linkedid],
+                        'new_url' => $fullUrl,
+                        'action' => 'skipped_duplicate'
+                    ), 'CallMeFULLFNAME duplicate by linkedid - skipped');
+                }
+            }
+            
+            // ПРИОРИТЕТ 2: Сохраняем по uniqueid (fallback для обратной совместимости)
+            if (!isset($globalsObj->FullFnameUrls[$callUniqueid])) {
+                $globalsObj->FullFnameUrls[$callUniqueid] = $fullUrl;
+                $helper->writeToLog(array(
+                    'uniqueid' => $callUniqueid,
+                    'linkedid' => $linkedid,
+                    'url' => $fullUrl,
+                    'saved_by' => 'uniqueid_fallback'
+                ), 'CallMeFULLFNAME saved by uniqueid (fallback)');
+            }
         }
 
         if (($variableName === 'ANSWER' || $variableName === 'DIALSTATUS')
@@ -2887,8 +2989,12 @@ $pamiClient->registerEventListener(
 //                    return "";
 //                }
 
-
-                $FullFname = $globalsObj->FullFnameUrls[$callLinkedid];
+                // Определяем linkedid ДО поиска URL (нужен для правильного поиска)
+                $linkedid = $globalsObj->uniqueidToLinkedid[$callLinkedid] ?? $callLinkedid;
+                
+                // Используем универсальную функцию поиска URL записи
+                $FullFname = callme_resolve_recording_url($callLinkedid, $linkedid, $globalsObj, $helper);
+                
 //                $FullFname = "";
 //              Длинна разговора, пусть будет всегда не меньше 1
                 $CallDuration = $globalsObj->Durations[$callLinkedid];
@@ -2902,7 +3008,6 @@ $pamiClient->registerEventListener(
 //                $CallDuration = $CallDuration ? $CallDuration : 1;
 
                 $CallDisposition = strtoupper((string)($globalsObj->Dispositions[$callLinkedid] ?? ''));
-                $linkedid = $globalsObj->uniqueidToLinkedid[$callLinkedid] ?? $callLinkedid;
                 $call_id = $globalsObj->calls[$callLinkedid] ?? ($globalsObj->callIdByLinkedid[$linkedid] ?? null);
                 $direction = 'inbound';
                 if ($linkedid && isset($globalsObj->callDirections[$linkedid])) {
@@ -3133,21 +3238,60 @@ $pamiClient->registerEventListener(
         $uniqueid = $event->getKey("Uniqueid");
         $linkedid = $event->getValue(); // Значение переменной = Linkedid
         $channel = $event->getChannel();
+        $linkedidFromEvent = $event->getKey("Linkedid"); // Linkedid из события AMI
 
         if (empty($uniqueid) || empty($linkedid)) {
+            $helper->writeToLog([
+                'uniqueid' => $uniqueid,
+                'linkedid' => $linkedid,
+                'channel' => $channel,
+                'reason' => 'Empty uniqueid or linkedid - skipping'
+            ], 'LINKEDID: Invalid event - skipped');
             return;
         }
 
+        $oldLinkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+        $isUpdate = $oldLinkedid !== null && $oldLinkedid !== $linkedid;
+        
+        // Создаем/обновляем маппинг uniqueid → linkedid
         $globalsObj->uniqueidToLinkedid[$uniqueid] = $linkedid;
         if (!isset($globalsObj->uniqueidToLinkedid[$linkedid])) {
             $globalsObj->uniqueidToLinkedid[$linkedid] = $linkedid;
+        }
+        
+        // СИНХРОНИЗАЦИЯ: Если call_id уже привязан к старому linkedid - переносим на новый
+        if ($isUpdate && $oldLinkedid && isset($globalsObj->callIdByLinkedid[$oldLinkedid])) {
+            $callId = $globalsObj->callIdByLinkedid[$oldLinkedid];
+            $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+            $globalsObj->callsByCallId[$callId] = $linkedid;
+            
+            $helper->writeToLog([
+                'uniqueid' => $uniqueid,
+                'old_linkedid' => $oldLinkedid,
+                'new_linkedid' => $linkedid,
+                'call_id' => $callId,
+                'action' => 'call_id_mapping_synced'
+            ], 'LINKEDID: Call_id mapping synchronized to new linkedid');
+        }
+        
+        // СИНХРОНИЗАЦИЯ: Если call_id уже привязан к uniqueid - связываем с linkedid
+        if (isset($globalsObj->calls[$uniqueid])) {
+            $callId = $globalsObj->calls[$uniqueid];
+            if (!isset($globalsObj->callIdByLinkedid[$linkedid])) {
+                $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+                $globalsObj->callsByCallId[$callId] = $linkedid;
+            }
         }
 
         $helper->writeToLog([
             'uniqueid' => $uniqueid,
             'linkedid' => $linkedid,
-            'channel' => $channel
-        ], 'LINKEDID: Mapping updated');
+            'linkedid_from_event' => $linkedidFromEvent,
+            'channel' => $channel,
+            'is_update' => $isUpdate,
+            'old_linkedid' => $oldLinkedid,
+            'has_call_id_mapping' => isset($globalsObj->callIdByLinkedid[$linkedid])
+        ], 'LINKEDID: Mapping updated' . ($isUpdate ? ' (updated)' : ' (new)'));
     },
     function (EventMessage $event) {
         return $event instanceof VarSetEvent
@@ -3335,17 +3479,37 @@ $pamiClient->registerEventListener(
         $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
         
         if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+            $fullUrl = "http://195.98.170.206/continuous/" . $relativePath;
+            
             // Сохраняем URL записи (если еще не сохранен)
             if (empty($globalsObj->originateCalls[$linkedid]['record_url'])) {
-                $globalsObj->originateCalls[$linkedid]['record_url'] = "http://195.98.170.206/continuous/" . $relativePath;
+                $globalsObj->originateCalls[$linkedid]['record_url'] = $fullUrl;
                 $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
                 
                 $helper->writeToLog([
                     'uniqueid' => $uniqueid,
                     'linkedid' => $linkedid,
-                    'record_url' => $globalsObj->originateCalls[$linkedid]['record_url']
-                ], 'ORIGINATE: Recording URL received');
+                    'record_url' => $fullUrl,
+                    'saved_by' => 'linkedid_originate'
+                ], 'ORIGINATE: Recording URL received and saved');
+            } else {
+                // URL уже сохранен - логируем, но не перезаписываем
+                $helper->writeToLog([
+                    'uniqueid' => $uniqueid,
+                    'linkedid' => $linkedid,
+                    'existing_url' => $globalsObj->originateCalls[$linkedid]['record_url'],
+                    'new_url' => $fullUrl,
+                    'action' => 'skipped_duplicate'
+                ], 'ORIGINATE: Recording URL duplicate - skipped');
             }
+        } else {
+            // Логируем если linkedid не найден или не Originate-вызов
+            $helper->writeToLog([
+                'uniqueid' => $uniqueid,
+                'linkedid' => $linkedid,
+                'is_originate' => $linkedid && isset($globalsObj->originateCalls[$linkedid]),
+                'reason' => $linkedid ? 'Not an Originate call' : 'Linkedid not found'
+            ], 'ORIGINATE: CallMeFULLFNAME received but not processed');
         }
     },
     function (EventMessage $event) use ($globalsObj) {
