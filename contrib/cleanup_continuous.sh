@@ -29,3 +29,5 @@ timestamp() {
     echo "$(timestamp) --- очистка завершена"
 } >> "${LOGFILE}" 2>&1
 
+
+
