@@ -706,8 +706,45 @@ function callme_force_ring_entry_cleanup($linkedid, $intNum, HelperFuncs $helper
     }
     $hidden = false;
 
+    // Защита для direct-переноса: если пришёл Hangup на агентской ножке,
+    // но карточка уже показана у другого адресата в рамках того же CALL_ID,
+    // не скрываем карточку у активного адресата.
+    $suppressHideForAgentHangup = false;
+    $isAgentLegHangup = isset($context['reason']) && (string)$context['reason'] === 'agent_leg_hangup';
+    if ($isAgentLegHangup && $routeType === 'direct' && $callId) {
+        // Проверяем, существует ли показанная карточка у любого другого intNum,
+        // относящегося к тому же CALL_ID (учитываем, что при transfer могут быть разные linkedid).
+        foreach ($globalsObj->callShownCards as $ldid => $shownByInt) {
+            if (empty($shownByInt) || !is_array($shownByInt)) {
+                continue;
+            }
+            foreach ($shownByInt as $shownIntNum => $shownMeta) {
+                if ((string)$shownIntNum === (string)$intNum) {
+                    continue;
+                }
+                $shownCallId = callme_resolve_call_id($ldid, (string)$shownIntNum, $globalsObj, $helper);
+                if ($shownCallId && $shownCallId === $callId) {
+                    $suppressHideForAgentHangup = true;
+                    break 2;
+                }
+            }
+        }
+    }
+
     if ($callId && callme_is_card_marked_shown($linkedid, $intNum, $globalsObj)) {
-        $hidden = (bool)$helper->hideInputCall($intNum, $callId);
+        if ($suppressHideForAgentHangup) {
+            // Только журналируем подавление скрытия карточки при живом мосте у другого адресата.
+            $helper->writeToLog(array_merge(array(
+                'linkedid' => $linkedid,
+                'intNum' => $intNum,
+                'call_id' => $callId,
+                'route_type' => $routeType,
+                'reason' => $context['reason'] ?? null,
+            ), $context), 'Suppress hide on agent_leg_hangup (direct): active card exists on another int');
+            $hidden = false;
+        } else {
+            $hidden = (bool)$helper->hideInputCall($intNum, $callId);
+        }
     }
 
     if (isset($globalsObj->callShownCards[$linkedid][$intNum])) {
