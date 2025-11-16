@@ -1,0 +1,1 @@
+git pull && chown bitrix:bitrix * -R && rm -f /home/bitrix/www/local/cust_app/callme/logs/* && supervisorctl restart callme
