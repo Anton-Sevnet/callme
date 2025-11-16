@@ -3064,9 +3064,60 @@ $pamiClient->registerEventListener(
                 
                 $statusCode = $helper->getStatusCodeFromDisposition($CallDisposition);
 
+                // КРИТИЧНО: После transfer может быть несколько linkedid с одним call_id
+                // Нужно закрыть карточки у ВСЕХ, у кого они открыты, не только для текущего linkedid!
                 $batchHide = array('result' => false, 'targets' => array());
-                if ($linkedid) {
-                    $batchHide = callme_hide_cards_batch($linkedid, $call_id, $helper, $globalsObj);
+                if ($call_id) {
+                    // Находим ВСЕ linkedid, связанные с этим call_id
+                    $allLinkedids = array();
+                    if ($linkedid) {
+                        $allLinkedids[] = $linkedid;
+                    }
+                    // Ищем в callIdByLinkedid
+                    foreach ($globalsObj->callIdByLinkedid as $ldid => $cid) {
+                        if ($cid === $call_id && $ldid !== $linkedid) {
+                            $allLinkedids[] = $ldid;
+                        }
+                    }
+                    // Ищем в transferHistory
+                    if (!empty($globalsObj->transferHistory)) {
+                        foreach ($globalsObj->transferHistory as $transferData) {
+                            if (!is_array($transferData) || empty($transferData['call_id'])) {
+                                continue;
+                            }
+                            if ($transferData['call_id'] === $call_id) {
+                                $histLinkedid = $transferData['linkedid'] ?? null;
+                                if ($histLinkedid && !in_array($histLinkedid, $allLinkedids, true)) {
+                                    $allLinkedids[] = $histLinkedid;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Закрываем карточки для ВСЕХ найденных linkedid
+                    $allTargets = array();
+                    foreach ($allLinkedids as $ldid) {
+                        $hideResult = callme_hide_cards_batch($ldid, $call_id, $helper, $globalsObj);
+                        if (!empty($hideResult['targets'])) {
+                            foreach ($hideResult['targets'] as $target) {
+                                // Избегаем дубликатов по user_id
+                                $found = false;
+                                foreach ($allTargets as $existing) {
+                                    if ($existing['user_id'] === $target['user_id']) {
+                                        $found = true;
+                                        break;
+                                    }
+                                }
+                                if (!$found) {
+                                    $allTargets[] = $target;
+                                }
+                            }
+                            if ($hideResult['result']) {
+                                $batchHide['result'] = true;
+                            }
+                        }
+                    }
+                    $batchHide['targets'] = $allTargets;
                 }
 
                 $primaryTarget = null;
