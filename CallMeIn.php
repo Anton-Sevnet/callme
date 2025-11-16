@@ -3066,6 +3066,8 @@ $pamiClient->registerEventListener(
 
                 // КРИТИЧНО: После transfer может быть несколько linkedid с одним call_id
                 // Нужно закрыть карточки у ВСЕХ, у кого они открыты, не только для текущего linkedid!
+                // НО: если Transfer активен (звонок продолжается с другим абонентом), 
+                // не скрываем карточки у активного linkedid, только у старого
                 $batchHide = array('result' => false, 'targets' => array());
                 if ($call_id) {
                     // Находим ВСЕ linkedid, связанные с этим call_id
@@ -3094,27 +3096,74 @@ $pamiClient->registerEventListener(
                         }
                     }
                     
-                    // Закрываем карточки для ВСЕХ найденных linkedid
-                    $allTargets = array();
-                    foreach ($allLinkedids as $ldid) {
-                        $hideResult = callme_hide_cards_batch($ldid, $call_id, $helper, $globalsObj);
-                        if (!empty($hideResult['targets'])) {
-                            foreach ($hideResult['targets'] as $target) {
-                                // Избегаем дубликатов по user_id
-                                $found = false;
-                                foreach ($allTargets as $existing) {
-                                    if ($existing['user_id'] === $target['user_id']) {
-                                        $found = true;
-                                        break;
+                    // Функция для проверки активности linkedid (есть показанные карточки или ringing номера)
+                    $isLinkedidActive = function($ldid) use ($globalsObj) {
+                        // Проверяем показанные карточки
+                        if (!empty($globalsObj->callShownCards[$ldid]) && is_array($globalsObj->callShownCards[$ldid])) {
+                            foreach ($globalsObj->callShownCards[$ldid] as $cardInfo) {
+                                if (is_array($cardInfo) && !empty($cardInfo['shown'])) {
+                                    return true;
+                                }
+                            }
+                        }
+                        // Проверяем ringing номера (активные звонки)
+                        if (!empty($globalsObj->ringingIntNums[$ldid]) && is_array($globalsObj->ringingIntNums[$ldid])) {
+                            foreach ($globalsObj->ringingIntNums[$ldid] as $ringData) {
+                                if (is_array($ringData)) {
+                                    $state = strtoupper((string)($ringData['state'] ?? ''));
+                                    // RING и ANSWER означают активное состояние
+                                    if (in_array($state, array('RING', 'ANSWER'), true)) {
+                                        return true;
                                     }
                                 }
-                                if (!$found) {
-                                    $allTargets[] = $target;
+                            }
+                        }
+                        return false;
+                    };
+                    
+                    // Определяем, на каком linkedid произошел Hangup (текущий linkedid)
+                    $hangupLinkedid = $linkedid;
+                    
+                    // Закрываем карточки только у неактивных linkedid или у того, на котором произошел Hangup
+                    // Если Transfer активен (есть активные linkedid), не скрываем карточки у активных
+                    $allTargets = array();
+                    foreach ($allLinkedids as $ldid) {
+                        $isActive = $isLinkedidActive($ldid);
+                        $isHangupLinkedid = ($ldid === $hangupLinkedid);
+                        
+                        // Скрываем карточки если:
+                        // 1. Это linkedid, на котором произошел Hangup (старая ножка Transfer)
+                        // 2. ИЛИ linkedid неактивен (нет показанных карточек и ringing номеров)
+                        $shouldHide = $isHangupLinkedid || !$isActive;
+                        
+                        if ($shouldHide) {
+                            $hideResult = callme_hide_cards_batch($ldid, $call_id, $helper, $globalsObj);
+                            if (!empty($hideResult['targets'])) {
+                                foreach ($hideResult['targets'] as $target) {
+                                    // Избегаем дубликатов по user_id
+                                    $found = false;
+                                    foreach ($allTargets as $existing) {
+                                        if ($existing['user_id'] === $target['user_id']) {
+                                            $found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!$found) {
+                                        $allTargets[] = $target;
+                                    }
+                                }
+                                if ($hideResult['result']) {
+                                    $batchHide['result'] = true;
                                 }
                             }
-                            if ($hideResult['result']) {
-                                $batchHide['result'] = true;
-                            }
+                        } else {
+                            // Логируем пропуск скрытия карточек у активного linkedid
+                            $helper->writeToLog(array(
+                                'linkedid' => $ldid,
+                                'call_id' => $call_id,
+                                'hangupLinkedid' => $hangupLinkedid,
+                                'reason' => 'Active Transfer detected: skipping hide for active linkedid',
+                            ), 'Skip hide cards on active Transfer linkedid');
                         }
                     }
                     $batchHide['targets'] = $allTargets;
