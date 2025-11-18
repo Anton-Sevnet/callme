@@ -913,6 +913,12 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
 
     $intNum = trim((string) ($event->getKey('Target') ?? ''));
     if ($intNum === '') {
+        $helper->writeToLog(array(
+            'event' => 'CallMeRingingStart',
+            'linkedid' => $linkedid,
+            'reason' => 'Empty Target parameter - event ignored',
+            'raw_event' => $event->getRawContent(),
+        ), 'UserEvent CallMeRingingStart IGNORED');
         return;
     }
 
@@ -1026,6 +1032,12 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
 
     $intNum = trim((string) ($event->getKey('Target') ?? ''));
     if ($intNum === '') {
+        $helper->writeToLog(array(
+            'event' => 'CallMeRingingAnswer',
+            'linkedid' => $linkedid,
+            'reason' => 'Empty Target parameter - event ignored',
+            'raw_event' => $event->getRawContent(),
+        ), 'UserEvent CallMeRingingAnswer IGNORED');
         return;
     }
 
@@ -1164,6 +1176,12 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
 
     $intNum = trim((string) ($event->getKey('Target') ?? ''));
     if ($intNum === '') {
+        $helper->writeToLog(array(
+            'event' => 'CallMeRingingStop',
+            'linkedid' => $linkedid,
+            'reason' => 'Empty Target parameter - event ignored',
+            'raw_event' => $event->getRawContent(),
+        ), 'UserEvent CallMeRingingStop IGNORED');
         return;
     }
 
