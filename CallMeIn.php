@@ -918,7 +918,7 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
 
     $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
     $direction = (string) ($event->getKey('Direction') ?? 'inbound');
-    $routeType = (string) ($event->getKey('RouteType') ?? '');
+    $routeType = trim((string) ($event->getKey('RouteType') ?? ''));
 
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
         $globalsObj->ringingIntNums[$linkedid] = array();
@@ -930,7 +930,7 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
     }
     $ringEntry['agent_uniqueid'] = $agentUniqueId ?: ($ringEntry['agent_uniqueid'] ?? null);
     $ringEntry['direction'] = $direction ?: ($ringEntry['direction'] ?? 'inbound');
-    $ringEntry['route_type'] = $routeType ?: ($ringEntry['route_type'] ?? 'direct');
+    $ringEntry['route_type'] = $routeType ?: ($ringEntry['route_type'] ?? null);
     $ringEntry['state'] = 'RING';
     $ringEntry['timestamp'] = time();
     $ringEntry['shown'] = callme_is_card_marked_shown($linkedid, $intNum, $globalsObj);
@@ -1000,7 +1000,7 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
         'agentUniqueid' => $agentUniqueId,
         'direction' => $direction,
         'call_id' => $callId,
-        'route_type' => $ringEntry['route_type'],
+        'route_type' => $routeType,
         'ringOrder' => $globalsObj->ringOrder[$linkedid],
         'alreadyShown' => $ringEntry['shown'],
     ), 'UserEvent CallMeRingingStart');
@@ -1031,6 +1031,7 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
 
     $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
     $direction = (string) ($event->getKey('Direction') ?? 'inbound');
+    $routeType = trim((string) ($event->getKey('RouteType') ?? ''));
 
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
         $globalsObj->ringingIntNums[$linkedid] = array();
@@ -1047,6 +1048,7 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
     }
     $entry['agent_uniqueid'] = $agentUniqueId ?: ($entry['agent_uniqueid'] ?? null);
     $entry['direction'] = $direction ?: ($entry['direction'] ?? 'inbound');
+    $entry['route_type'] = $routeType ?: ($entry['route_type'] ?? null);
     $entry['state'] = 'ANSWER';
     $entry['timestamp'] = time();
     $entry['answered'] = true;
@@ -1107,6 +1109,7 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
         'agentUniqueid' => $agentUniqueId,
         'direction' => $direction,
         'call_id' => $callId,
+        'route_type' => $routeType,
     ), 'UserEvent CallMeRingingAnswer');
 
     if ($callId) {
@@ -1166,6 +1169,7 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
 
     $dialStatusRaw = (string) ($event->getKey('DialStatus') ?? '');
     $dialStatus = strtoupper(trim($dialStatusRaw));
+    $routeType = trim((string) ($event->getKey('RouteType') ?? ''));
     $cleanupOnStop = !in_array($dialStatus, array('ANSWER', 'ANSWERED'), true);
 
     $eventCallId = trim((string) ($event->getKey('CallId') ?? $event->getKey('CALLID') ?? ''));
@@ -1265,6 +1269,7 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
         'dialStatus' => $dialStatusRaw,
         'call_id' => $callId,
         'agentUniqueid' => $agentUniqueId,
+        'route_type' => $routeType,
         'cleanupOnStop' => $cleanupOnStop,
     ), 'UserEvent CallMeRingingStop');
 }
