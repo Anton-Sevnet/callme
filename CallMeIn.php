@@ -1224,10 +1224,7 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
 {
     $linkedid = (string) ($event->getKey('Linkedid') ?? $event->getKey('LinkedID') ?? '');
     $linkedid = trim($linkedid);
-    if ($linkedid === '') {
-        return;
-    }
-
+    
     $intNum = trim((string) ($event->getKey('Target') ?? ''));
     if ($intNum === '') {
         return;
@@ -1237,6 +1234,151 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
     $direction = (string) ($event->getKey('Direction') ?? 'inbound');
     $routeTypeRaw = (string) ($event->getKey('RouteType') ?? '');
     $routeType = callme_normalize_route_type($routeTypeRaw);
+    
+    // Fallback: если Linkedid пустой, пытаемся найти его по AgentUniqueid, call_id или intNum
+    if ($linkedid === '') {
+        $eventCallId = trim((string) ($event->getKey('CallId') ?? $event->getKey('CALLID') ?? ''));
+        $resolvedBy = 'unknown';
+        
+        // Пробуем найти linkedid по AgentUniqueid
+        if ($agentUniqueId !== '') {
+            $linkedid = $globalsObj->uniqueidToLinkedid[$agentUniqueId] ?? null;
+            if ($linkedid) {
+                $resolvedBy = 'agentUniqueid';
+            }
+        }
+        
+        // Если не нашли, пробуем найти по call_id из события
+        if (!$linkedid && $eventCallId !== '') {
+            $linkedid = $globalsObj->callsByCallId[$eventCallId] ?? null;
+            if ($linkedid) {
+                $resolvedBy = 'eventCallId';
+            }
+        }
+        
+        // Если не нашли, пробуем найти по intNum через callIdByInt
+        if (!$linkedid && $intNum !== '') {
+            $callId = $globalsObj->callIdByInt[$intNum] ?? null;
+            if ($callId) {
+                $linkedid = $globalsObj->callsByCallId[$callId] ?? null;
+                if ($linkedid) {
+                    $resolvedBy = 'intNum_callId';
+                }
+            }
+        }
+        
+        // Если все еще не нашли, пробуем найти по всем callIdByLinkedid, которые связаны с intNum
+        if (!$linkedid && $intNum !== '') {
+            $callId = $globalsObj->callIdByInt[$intNum] ?? null;
+            if ($callId) {
+                // Ищем linkedid, который имеет этот call_id
+                foreach ($globalsObj->callIdByLinkedid as $candidateLinkedid => $candidateCallId) {
+                    if ($candidateCallId === $callId) {
+                        $linkedid = $candidateLinkedid;
+                        $resolvedBy = 'callIdByLinkedid';
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Если все еще не нашли, пробуем найти по всем linkedid, которые имеют звонки для этого intNum
+        if (!$linkedid && $intNum !== '') {
+            foreach ($globalsObj->ringingIntNums as $candidateLinkedid => $ringingData) {
+                if (isset($ringingData[$intNum])) {
+                    $linkedid = $candidateLinkedid;
+                    $resolvedBy = 'ringingIntNums';
+                    break;
+                }
+            }
+        }
+        
+        // Если все еще не нашли, пробуем найти по всем calls, которые имеют call_id для этого intNum
+        if (!$linkedid && $intNum !== '') {
+            $callId = $globalsObj->callIdByInt[$intNum] ?? null;
+            if ($callId) {
+                // Ищем linkedid в calls, который имеет этот call_id
+                foreach ($globalsObj->calls as $candidateUniqueid => $candidateCallId) {
+                    if ($candidateCallId === $callId) {
+                        $linkedid = $globalsObj->uniqueidToLinkedid[$candidateUniqueid] ?? $candidateUniqueid;
+                        if ($linkedid) {
+                            $resolvedBy = 'calls_uniqueid';
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Если все еще не нашли, пробуем найти по всем callIdByLinkedid (последний fallback)
+        if (!$linkedid && $intNum !== '') {
+            $callId = $globalsObj->callIdByInt[$intNum] ?? null;
+            if ($callId) {
+                // Ищем linkedid, который имеет этот call_id в callIdByLinkedid
+                foreach ($globalsObj->callIdByLinkedid as $candidateLinkedid => $candidateCallId) {
+                    if ($candidateCallId === $callId) {
+                        $linkedid = $candidateLinkedid;
+                        $resolvedBy = 'callIdByLinkedid_fallback';
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Если все еще не нашли, пробуем найти по всем callIdByLinkedid напрямую (для случаев, когда callIdByInt еще не установлен)
+        // Это важно для звонков в очередь, когда UserEvent приходит до установки callIdByInt
+        if (!$linkedid && $intNum !== '') {
+            // Ищем linkedid, который имеет call_id, связанный с этим intNum через другие механизмы
+            // Пробуем найти через callsByCallId, если есть call_id для intNum в других местах
+            foreach ($globalsObj->callIdByLinkedid as $candidateLinkedid => $candidateCallId) {
+                // Проверяем, есть ли этот linkedid в ringingIntNums для этого intNum
+                if (isset($globalsObj->ringingIntNums[$candidateLinkedid][$intNum])) {
+                    $linkedid = $candidateLinkedid;
+                    $resolvedBy = 'callIdByLinkedid_ringingIntNums';
+                    break;
+                }
+            }
+        }
+        
+        // Если все еще не нашли, пробуем найти по всем callsByCallId, если есть call_id
+        // Это последний fallback - ищем linkedid по любому call_id, который может быть связан с intNum
+        if (!$linkedid && $intNum !== '') {
+            // Пробуем найти через все callIdByLinkedid, если есть хотя бы один call_id
+            if (!empty($globalsObj->callIdByLinkedid)) {
+                // Берем первый linkedid, который имеет call_id (для multi звонков это может быть основной linkedid)
+                // Это рискованный fallback, но лучше показать карточку, чем не показать
+                $firstLinkedid = array_key_first($globalsObj->callIdByLinkedid);
+                if ($firstLinkedid && isset($globalsObj->ringingIntNums[$firstLinkedid])) {
+                    // Проверяем, есть ли этот intNum в ringingIntNums для этого linkedid
+                    if (isset($globalsObj->ringingIntNums[$firstLinkedid][$intNum])) {
+                        $linkedid = $firstLinkedid;
+                        $resolvedBy = 'callIdByLinkedid_first_match';
+                    }
+                }
+            }
+        }
+        
+        if ($linkedid === '' || $linkedid === null) {
+            $helper->writeToLog(array(
+                'event' => 'CallMeRingingStart',
+                'intNum' => $intNum,
+                'agentUniqueid' => $agentUniqueId,
+                'callId' => $eventCallId !== '' ? $eventCallId : null,
+                'callIdByInt' => $globalsObj->callIdByInt[$intNum] ?? null,
+                'message' => 'Linkedid is empty and cannot be resolved',
+            ), 'CallMeRingingStart: Linkedid cannot be resolved');
+            return;
+        }
+        
+        $helper->writeToLog(array(
+            'event' => 'CallMeRingingStart',
+            'intNum' => $intNum,
+            'agentUniqueid' => $agentUniqueId,
+            'resolvedLinkedid' => $linkedid,
+            'resolvedBy' => $resolvedBy,
+            'callId' => $eventCallId !== '' ? $eventCallId : ($globalsObj->callIdByInt[$intNum] ?? null),
+        ), 'CallMeRingingStart: Linkedid resolved from empty');
+    }
     if ($routeTypeRaw !== '') {
         $globalsObj->callRouteTypes[$linkedid] = $routeType;
     } elseif (isset($globalsObj->callRouteTypes[$linkedid])) {
