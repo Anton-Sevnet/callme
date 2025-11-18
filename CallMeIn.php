@@ -2318,6 +2318,7 @@ function callme_handle_dial_begin_common(
                         }
                     }
                 }
+                }
             }
             
             // ПРИОРИТЕТ 5: Ищем по всем ringingIntNums с активными звонками (fallback для сложных случаев)
@@ -3962,7 +3963,7 @@ $pamiClient->registerEventListener(
                     escapeshellarg((string)($FullFname ?? '')),
                     escapeshellarg((string)($CallIntNum ?? '')),
                     escapeshellarg((string)($CallDuration ?? '')),
-                    escapeshellarg((string)($CallDisposition ?? ''))
+                    escapeshellarg((string)($CallDisposition ?? 'NO ANSWER'))
                 );
                 exec($uploadCmd);
                 
@@ -4410,7 +4411,7 @@ $pamiClient->registerEventListener(
                         escapeshellarg((string)($data['call_id'] ?? '')),
                         escapeshellarg((string)($data['record_url'] ?? '')),
                         escapeshellarg((string)($data['intNum'] ?? '')),
-                        escapeshellarg((string)($duration ?? '')),
+                        escapeshellarg((string)($duration ?? '0')),
                         escapeshellarg('ANSWERED')
                     );
                     exec($uploadCmd);
