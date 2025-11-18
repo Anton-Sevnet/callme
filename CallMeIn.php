@@ -1796,6 +1796,87 @@ function callme_handle_dial_begin_common(
                 callme_clone_call_context($sourceLinkedid, $linkedid, $call_id, $globalsObj);
             }
         }
+        
+        // Для каналов Local/ из очереди ищем call_id по всем известным linkedid с тем же базовым номером
+        // Это важно для multi звонков, когда каналы Local/ имеют другие linkedid
+        if (!$call_id) {
+            $channel = (string)($event->getKey('Channel') ?? '');
+            if (strpos($channel, 'Local/') === 0 && (strpos($channel, 'from-queue') !== false || strpos($channel, 'from-ringgroups') !== false)) {
+                // Ищем call_id по всем известным linkedid, которые могут быть связаны с основным звонком
+                $linkedidBase = explode('.', (string)$linkedid)[0] ?? '';
+                if ($linkedidBase !== '') {
+                    foreach ($globalsObj->callIdByLinkedid as $knownLinkedid => $knownCallId) {
+                        $knownBase = explode('.', (string)$knownLinkedid)[0] ?? '';
+                        if ($knownBase === $linkedidBase && $knownCallId) {
+                            $call_id = $knownCallId;
+                            $sourceLinkedid = $knownLinkedid;
+                            callme_clone_call_context($sourceLinkedid, $linkedid, $call_id, $globalsObj);
+                            $helper->writeToLog(array(
+                                'linkedid' => $linkedid,
+                                'foundLinkedid' => $sourceLinkedid,
+                                'call_id' => $call_id,
+                                'channel' => $channel,
+                                'exten' => $exten,
+                            ), 'DialBegin: Found call_id for Local/ queue channel by linkedid base match');
+                            break;
+                        }
+                    }
+                }
+                
+                // Если не нашли по linkedid, ищем по всем call_id, которые могут быть связаны с входящим звонком
+                // Ищем call_id, который уже используется для других номеров в этом же звонке (multi звонок)
+                if (!$call_id) {
+                    // Проверяем, есть ли уже зарегистрированные номера для этого linkedid или связанных linkedid
+                    // Это важно для multi звонков, когда несколько номеров звонят одновременно
+                    $candidateCallIds = array();
+                    foreach ($globalsObj->ringingIntNums as $ringLinkedid => $ringNums) {
+                        if (!empty($ringNums) && isset($globalsObj->callIdByLinkedid[$ringLinkedid])) {
+                            $candidateCallId = $globalsObj->callIdByLinkedid[$ringLinkedid];
+                            if ($candidateCallId && isset($globalsObj->callDirections[$ringLinkedid]) && 
+                                $globalsObj->callDirections[$ringLinkedid] === 'inbound') {
+                                // Проверяем, что это входящий звонок и есть активные звонящие номера
+                                $candidateCallIds[$candidateCallId] = $ringLinkedid;
+                            }
+                        }
+                    }
+                    
+                    // Если нашли несколько кандидатов, берем тот, у которого больше всего активных звонящих номеров
+                    if (!empty($candidateCallIds)) {
+                        $bestCallId = null;
+                        $bestLinkedid = null;
+                        $maxRingingCount = 0;
+                        foreach ($candidateCallIds as $candidateCallId => $candidateLinkedid) {
+                            $ringingCount = 0;
+                            foreach ($globalsObj->ringingIntNums as $ringLinkedid => $ringNums) {
+                                if (isset($globalsObj->callIdByLinkedid[$ringLinkedid]) && 
+                                    $globalsObj->callIdByLinkedid[$ringLinkedid] === $candidateCallId) {
+                                    $ringingCount += count($ringNums);
+                                }
+                            }
+                            if ($ringingCount > $maxRingingCount) {
+                                $maxRingingCount = $ringingCount;
+                                $bestCallId = $candidateCallId;
+                                $bestLinkedid = $candidateLinkedid;
+                            }
+                        }
+                        
+                        if ($bestCallId && $bestLinkedid) {
+                            $call_id = $bestCallId;
+                            $sourceLinkedid = $bestLinkedid;
+                            callme_clone_call_context($sourceLinkedid, $linkedid, $call_id, $globalsObj);
+                            $helper->writeToLog(array(
+                                'linkedid' => $linkedid,
+                                'foundLinkedid' => $sourceLinkedid,
+                                'call_id' => $call_id,
+                                'channel' => $channel,
+                                'exten' => $exten,
+                                'ringingCount' => $maxRingingCount,
+                            ), 'DialBegin: Found call_id for Local/ queue channel by multi call match');
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
@@ -1819,8 +1900,15 @@ function callme_handle_dial_begin_common(
         // Определяем тип звонка по каналу, если не установлен
         $channel = (string)($event->getKey('Channel') ?? $event->getKey('DestChannel') ?? '');
         $destChannel = (string)($event->getKey('DestChannel') ?? '');
-        if (strpos($channel, 'from-queue') !== false || strpos($destChannel, 'from-queue') !== false ||
-            strpos($channel, 'from-ringgroups') !== false || strpos($destChannel, 'from-ringgroups') !== false) {
+        $dialString = (string)($event->getKey('Dialstring') ?? $rawDialString ?? '');
+        
+        // Проверяем наличие признаков multi звонка
+        $isMultiChannel = (strpos($channel, 'from-queue') !== false || strpos($destChannel, 'from-queue') !== false ||
+            strpos($channel, 'from-ringgroups') !== false || strpos($destChannel, 'from-ringgroups') !== false ||
+            strpos($channel, 'Local/') === 0);
+        
+        // Для каналов Local/ из очереди всегда multi
+        if ($isMultiChannel) {
             $routeType = 'multi';
             $globalsObj->callRouteTypes[$linkedid] = $routeType;
             if ($linkedidOriginal !== $linkedid) {
@@ -1881,8 +1969,19 @@ function callme_handle_dial_begin_common(
             'route_type' => $routeType,
             'call_id' => $call_id,
             'ringingIntNums' => array_keys($globalsObj->ringingIntNums[$linkedid] ?? array()),
+            'channel' => (string)($event->getKey('Channel') ?? ''),
         ), 'DialBegin: Multi call detected, showing cards for all ringing numbers');
         callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
+    }
+    
+    // Дополнительный fallback: если call_id найден, но еще не показаны карточки для multi звонка
+    // Это важно для каналов Local/ из очереди, которые могут иметь другие linkedid
+    if ($call_id && $routeType === 'multi' && !empty($exten)) {
+        $ringEntry = $globalsObj->ringingIntNums[$linkedid][$exten] ?? null;
+        if ($ringEntry && empty($ringEntry['shown'])) {
+            // Показываем карточку для текущего номера, если она еще не показана
+            callme_show_card_for_int($linkedid, $exten, $helper, $globalsObj);
+        }
     }
 
     if ($call_id) {
