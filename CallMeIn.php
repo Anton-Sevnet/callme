@@ -3574,7 +3574,70 @@ $pamiClient->registerEventListener(
         $linkedid = $event->getKey("Linkedid");
         $destUniqueId = $event->getKey("DestUniqueID");
         $rawDialString = (string) $event->getKey("DialString");
+        $channel = (string) $event->getKey("Channel");
+        $destChannel = (string) $event->getKey("DestChannel");
+        
+        // КРИТИЧНО: Логируем все параметры для диагностики
+        $helper->writeToLog(array(
+            'event' => 'DialBegin',
+            'uniqueid' => $callUniqueid,
+            'linkedid' => $linkedid,
+            'destUniqueId' => $destUniqueId,
+            'rawDialString' => $rawDialString,
+            'channel' => $channel,
+            'destChannel' => $destChannel,
+            'dialString_empty' => $rawDialString === '',
+            'isQueueChannel' => strpos($channel, 'Local/') === 0 && strpos($channel, 'from-queue') !== false,
+        ), 'DialBegin: Event received');
+        
         if ($rawDialString === '') {
+            // КРИТИЧНО: Для каналов очереди DialString может быть пустым, но номер можно извлечь из Channel или DestChannel
+            if (strpos($channel, 'Local/') === 0 && strpos($channel, 'from-queue') !== false) {
+                // Пытаемся извлечь номер из Channel или DestChannel
+                $resolvedInt = callme_extract_internal_number(
+                    $channel,
+                    $destChannel,
+                    $event->getKey("DestCallerIDNum"),
+                    $event->getKey("DestCallerIDName")
+                );
+                
+                if ($resolvedInt) {
+                    $helper->writeToLog(array(
+                        'uniqueid' => $callUniqueid,
+                        'linkedid' => $linkedid,
+                        'channel' => $channel,
+                        'destChannel' => $destChannel,
+                        'resolvedInt' => $resolvedInt,
+                        'message' => 'Resolved internal number from channel for queue call',
+                    ), 'DialBegin: Resolved intNum from channel (DialString was empty)');
+                    
+                    $exten = $resolvedInt;
+                    $callerNumberRaw = $event->getCallerIdNum();
+                    
+                    callme_handle_dial_begin_common(
+                        $event,
+                        $callUniqueid,
+                        $destUniqueId,
+                        $linkedid,
+                        $exten,
+                        $channel, // Используем channel как dialString для очередей
+                        $callerNumberRaw,
+                        $helper,
+                        $globalsObj
+                    );
+                    echo "\n-------------------------------------------------------------------\n\r";
+                    echo "\n\r";
+                    return;
+                }
+            }
+            
+            $helper->writeToLog(array(
+                'uniqueid' => $callUniqueid,
+                'linkedid' => $linkedid,
+                'channel' => $channel,
+                'destChannel' => $destChannel,
+                'message' => 'DialString is empty and cannot resolve from channel',
+            ), 'DialBegin: DialString empty, skipping');
             return;
         }
 
@@ -3653,14 +3716,79 @@ $pamiClient->registerEventListener(
             $linkedid = $event->getKey('Linkedid') ?? $event->getKey('LinkedID') ?? null;
 
             $rawDialString = (string) ($event->getKey('Dialstring') ?? $event->getKey('DialString') ?? '');
+            $channel = (string) ($event->getKey('Channel') ?? '');
+            $destChannel = (string) ($event->getKey('DestChannel') ?? $event->getKey('Destination') ?? '');
+            
+            // КРИТИЧНО: Логируем все параметры для диагностики
+            $helper->writeToLog(array(
+                'event' => 'Dial legacy Begin',
+                'uniqueid' => $callUniqueid,
+                'linkedid' => $linkedid,
+                'destUniqueId' => $destUniqueId,
+                'rawDialString' => $rawDialString,
+                'channel' => $channel,
+                'destChannel' => $destChannel,
+                'dialString_empty' => $rawDialString === '',
+                'isQueueChannel' => strpos($channel, 'Local/') === 0 && strpos($channel, 'from-queue') !== false,
+            ), 'Dial legacy: Event received');
+            
             if ($rawDialString === '') {
+                // КРИТИЧНО: Для каналов очереди DialString может быть пустым, но номер можно извлечь из Channel или DestChannel
+                if (strpos($channel, 'Local/') === 0 && strpos($channel, 'from-queue') !== false) {
+                    // Пытаемся извлечь номер из Channel или DestChannel
+                    $resolvedInt = callme_extract_internal_number(
+                        $channel,
+                        $destChannel,
+                        $event->getKey('DestCallerIDNum'),
+                        $event->getKey('DestCallerIDName')
+                    );
+                    
+                    if ($resolvedInt) {
+                        $helper->writeToLog(array(
+                            'uniqueid' => $callUniqueid,
+                            'linkedid' => $linkedid,
+                            'channel' => $channel,
+                            'destChannel' => $destChannel,
+                            'resolvedInt' => $resolvedInt,
+                            'message' => 'Resolved internal number from channel for queue call',
+                        ), 'Dial legacy: Resolved intNum from channel (DialString was empty)');
+                        
+                        if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
+                            $isRealOriginate = $globalsObj->originateCalls[$linkedid]['is_originate'] ?? false;
+                            if ($isRealOriginate) {
+                                return;
+                            }
+                        }
+                        
+                        callme_handle_dial_begin_common(
+                            $event,
+                            $callUniqueid,
+                            $destUniqueId,
+                            $linkedid,
+                            $resolvedInt,
+                            $channel, // Используем channel как dialString для очередей
+                            $event->getKey('CallerIDNum'),
+                            $helper,
+                            $globalsObj
+                        );
+                        return;
+                    }
+                }
+                
+                $helper->writeToLog(array(
+                    'uniqueid' => $callUniqueid,
+                    'linkedid' => $linkedid,
+                    'channel' => $channel,
+                    'destChannel' => $destChannel,
+                    'message' => 'DialString is empty and cannot resolve from channel',
+                ), 'Dial legacy: DialString empty, skipping');
                 return;
             }
 
             $resolvedInt = callme_extract_internal_number(
                 $rawDialString,
-                $event->getKey('Destination'),
-                $event->getKey('Channel'),
+                $destChannel,
+                $channel,
                 $event->getKey('DestCallerIDNum'),
                 $event->getKey('DestCallerIDName')
             );
@@ -3671,8 +3799,8 @@ $pamiClient->registerEventListener(
                     'linkedid_raw' => $linkedid,
                     'destUniqueId' => $destUniqueId,
                     'dialString' => $rawDialString,
-                    'channel' => $event->getKey("Channel"),
-                    'destChannel' => $event->getKey("DestChannel"),
+                    'channel' => $channel,
+                    'destChannel' => $destChannel,
                     'destCallerIdNum' => $event->getKey("DestCallerIDNum"),
                     'destCallerIdName' => $event->getKey("DestCallerIDName"),
                 ), 'Dial legacy: unable to resolve internal number');
