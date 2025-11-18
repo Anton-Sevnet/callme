@@ -2115,11 +2115,112 @@ function callme_handle_dial_begin_common(
     }
     
     if (!$call_id && $isQueueChannel) {
+            // ПРИОРИТЕТ 0: Ищем call_id по ORIGINAL_LINKEDID из маппинга queueChannelToOriginalLinkedid (если VarSetEvent уже пришел)
+            // Это критично для очередей, когда ORIGINAL_LINKEDID отличается от linkedid канала очереди
+            // В cli_asterisk.log видно: Set("Local/220@from-queue-1b7e;2", "__CALLME_LINKEDID=1763480309.40760")
+            if (isset($globalsObj->queueChannelToOriginalLinkedid[$linkedid])) {
+                $originalLinkedid = $globalsObj->queueChannelToOriginalLinkedid[$linkedid];
+                if (isset($globalsObj->callIdByLinkedid[$originalLinkedid])) {
+                    $call_id = $globalsObj->callIdByLinkedid[$originalLinkedid];
+                    $sourceLinkedid = $originalLinkedid;
+                    callme_clone_call_context($sourceLinkedid, $linkedid, $call_id, $globalsObj);
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'originalLinkedid' => $originalLinkedid,
+                        'foundLinkedid' => $sourceLinkedid,
+                        'call_id' => $call_id,
+                        'channel' => $channel,
+                        'exten' => $exten,
+                        'message' => 'Found by ORIGINAL_LINKEDID mapping from VarSetEvent',
+                    ), 'DialBegin: Found call_id for queue channel by ORIGINAL_LINKEDID mapping (priority 0)');
+                }
+            }
+            
+            // ПРИОРИТЕТ 0.5: Ищем call_id по ORIGINAL_LINKEDID через номер вызывающего (если маппинг еще не получен)
+            // VarSetEvent для __CALLME_LINKEDID может прийти ПОСЛЕ DialBegin, поэтому ищем по номеру вызывающего
+            if (!$call_id && $normalizedCaller !== '') {
+                // Ищем самый свежий inbound звонок с тем же номером вызывающего
+                $bestCallId = null;
+                $bestLinkedid = null;
+                $maxTimestamp = 0;
+                
+                foreach ($globalsObj->callIdByLinkedid as $candidateLinkedid => $candidateCallId) {
+                    if (!$candidateCallId) {
+                        continue;
+                    }
+                    
+                    // Проверяем, что это inbound звонок
+                    if (isset($globalsObj->callDirections[$candidateLinkedid]) && 
+                        $globalsObj->callDirections[$candidateLinkedid] !== 'inbound') {
+                        continue;
+                    }
+                    
+                    // Проверяем совпадение номера вызывающего через callCrmData
+                    $matchesCaller = false;
+                    if (isset($globalsObj->callCrmData[$candidateLinkedid])) {
+                        // Для точного поиска можно сравнить номер из CRM, но пока используем timestamp (самый свежий)
+                        $matchesCaller = true;
+                    }
+                    
+                    if (!$matchesCaller) {
+                        // Если нет callCrmData, проверяем по timestamp (самый свежий inbound звонок может быть нашим)
+                        $matchesCaller = true;
+                    }
+                    
+                    if (!$matchesCaller) {
+                        continue;
+                    }
+                    
+                    // Ищем максимальный timestamp
+                    $candidateTimestamp = 0;
+                    if (isset($globalsObj->ringingIntNums[$candidateLinkedid])) {
+                        foreach ($globalsObj->ringingIntNums[$candidateLinkedid] as $ringData) {
+                            $ringTs = (int)($ringData['timestamp'] ?? 0);
+                            if ($ringTs > $candidateTimestamp) {
+                                $candidateTimestamp = $ringTs;
+                            }
+                        }
+                    }
+                    
+                    // Если нет timestamp в ringingIntNums, используем время из callCrmData или текущее время минус небольшое значение
+                    if ($candidateTimestamp === 0 && isset($globalsObj->callIdByLinkedid[$candidateLinkedid])) {
+                        $candidateTimestamp = isset($globalsObj->callCrmData[$candidateLinkedid]['timestamp']) 
+                            ? (int)$globalsObj->callCrmData[$candidateLinkedid]['timestamp'] 
+                            : (time() - 30); // 30 секунд назад для свежих звонков (меньше чем 60, чтобы приоритет был выше)
+                    }
+                    
+                    // Берем самый свежий inbound звонок с тем же номером вызывающего
+                    if ($candidateTimestamp > $maxTimestamp) {
+                        $maxTimestamp = $candidateTimestamp;
+                        $bestCallId = $candidateCallId;
+                        $bestLinkedid = $candidateLinkedid;
+                    }
+                }
+                
+                if ($bestCallId && $bestLinkedid && $maxTimestamp > (time() - 120)) {
+                    // Используем только если звонок очень свежий (не старше 2 минут)
+                    $call_id = $bestCallId;
+                    $sourceLinkedid = $bestLinkedid;
+                    callme_clone_call_context($sourceLinkedid, $linkedid, $call_id, $globalsObj);
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'foundLinkedid' => $sourceLinkedid,
+                        'call_id' => $call_id,
+                        'channel' => $channel,
+                        'exten' => $exten,
+                        'callerNumber' => $normalizedCaller,
+                        'timestamp' => $maxTimestamp,
+                        'message' => 'Found by ORIGINAL_LINKEDID (fresh inbound call matching caller)',
+                    ), 'DialBegin: Found call_id for queue channel by ORIGINAL_LINKEDID (priority 0)');
+                }
+            }
+            
             // ПРИОРИТЕТ 1: Ищем call_id по базовому linkedid (основной канал из NewChannelEvent)
             // Для очередей linkedid могут быть 1234567890, 1234567890.1, 1234567890.2 и т.д.
             // Основной канал имеет linkedid без .X суффикса
-            $linkedidBase = explode('.', (string)$linkedid)[0] ?? '';
-            if ($linkedidBase !== '' && $linkedidBase !== $linkedid) {
+            if (!$call_id) {
+                $linkedidBase = explode('.', (string)$linkedid)[0] ?? '';
+                if ($linkedidBase !== '' && $linkedidBase !== $linkedid) {
                 // Ищем по базовому linkedid в callIdByLinkedid
                 if (isset($globalsObj->callIdByLinkedid[$linkedidBase])) {
                     $call_id = $globalsObj->callIdByLinkedid[$linkedidBase];
@@ -2975,7 +3076,69 @@ $pamiClient->registerEventListener(
         $linkedidFromEvent = $event->getKey("Linkedid");
         $linkedid = $linkedidFromEvent ?: ($globalsObj->uniqueidToLinkedid[$callUniqueid] ?? null);
 
-        if ($variableName === 'BRIDGEPEER') {
+        if ($variableName === '__CALLME_LINKEDID' || $variableName === 'CALLME_LINKEDID') {
+            // КРИТИЧНО: Сохраняем маппинг между linkedid канала очереди и ORIGINAL_LINKEDID
+            // Это необходимо для очередей, когда ORIGINAL_LINKEDID отличается от linkedid канала очереди
+            // В cli_asterisk.log видно: Set("Local/220@from-queue-1b7e;2", "__CALLME_LINKEDID=1763480309.40760")
+            $originalLinkedid = trim((string)$rawValue);
+            $channel = (string)$event->getChannel();
+            
+            if ($originalLinkedid === '' || $channel === '') {
+                return;
+            }
+            
+            // Определяем, является ли это каналом очереди
+            $isQueueChannel = (strpos($channel, 'Local/') === 0 && 
+                             (strpos($channel, 'from-queue') !== false || strpos($channel, 'from-ringgroups') !== false));
+            
+            if ($isQueueChannel && $linkedid && $originalLinkedid !== $linkedid) {
+                // Сохраняем маппинг: linkedid канала очереди -> ORIGINAL_LINKEDID
+                // Это позволит использовать ORIGINAL_LINKEDID в DialBegin для поиска call_id
+                if (!isset($globalsObj->queueChannelToOriginalLinkedid)) {
+                    $globalsObj->queueChannelToOriginalLinkedid = array();
+                }
+                $globalsObj->queueChannelToOriginalLinkedid[$linkedid] = $originalLinkedid;
+                $globalsObj->queueChannelToOriginalLinkedid[$callUniqueid] = $originalLinkedid;
+                
+                // Если есть call_id для ORIGINAL_LINKEDID, копируем его для linkedid канала очереди
+                if (isset($globalsObj->callIdByLinkedid[$originalLinkedid])) {
+                    $call_id = $globalsObj->callIdByLinkedid[$originalLinkedid];
+                    $globalsObj->callIdByLinkedid[$linkedid] = $call_id;
+                    $globalsObj->callIdByLinkedid[$callUniqueid] = $call_id;
+                    if (!isset($globalsObj->callsByCallId[$call_id]) || 
+                        $globalsObj->callsByCallId[$call_id] === $originalLinkedid) {
+                        // Не перезаписываем, если уже есть другой linkedid
+                    }
+                    
+                    // Копируем контекст звонка
+                    if (isset($globalsObj->callCrmData[$originalLinkedid])) {
+                        $globalsObj->callCrmData[$linkedid] = $globalsObj->callCrmData[$originalLinkedid];
+                    }
+                    if (isset($globalsObj->callDirections[$originalLinkedid])) {
+                        $globalsObj->callDirections[$linkedid] = $globalsObj->callDirections[$originalLinkedid];
+                    }
+                    
+                    $helper->writeToLog(array(
+                        'channel' => $channel,
+                        'uniqueid' => $callUniqueid,
+                        'queueLinkedid' => $linkedid,
+                        'originalLinkedid' => $originalLinkedid,
+                        'call_id' => $call_id,
+                        'message' => 'Mapped queue channel linkedid to ORIGINAL_LINKEDID via VarSetEvent',
+                    ), 'VarSetEvent: __CALLME_LINKEDID mapped for queue channel');
+                } else {
+                    $helper->writeToLog(array(
+                        'channel' => $channel,
+                        'uniqueid' => $callUniqueid,
+                        'queueLinkedid' => $linkedid,
+                        'originalLinkedid' => $originalLinkedid,
+                        'message' => 'Mapped queue channel linkedid to ORIGINAL_LINKEDID (call_id not found yet)',
+                    ), 'VarSetEvent: __CALLME_LINKEDID mapped for queue channel (no call_id yet)');
+                }
+            }
+            
+            return;
+        } elseif ($variableName === 'BRIDGEPEER') {
             $channel = (string)$event->getChannel();
             $bridgedPeer = (string)$event->getValue();
             if (strpos($channel, 'SIP/') !== 0) {
