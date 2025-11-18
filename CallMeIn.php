@@ -1809,12 +1809,24 @@ function callme_handle_dial_begin_common(
     }
 
     $existingEntry = $globalsObj->ringingIntNums[$linkedid][$exten] ?? array();
-    $routeType = null;
+    $routeType = 'direct'; // По умолчанию direct
     if (isset($globalsObj->callRouteTypes[$linkedid])) {
         $routeType = callme_normalize_route_type($globalsObj->callRouteTypes[$linkedid]);
     } elseif (isset($globalsObj->callRouteTypes[$linkedidOriginal])) {
         $routeType = callme_normalize_route_type($globalsObj->callRouteTypes[$linkedidOriginal]);
         $globalsObj->callRouteTypes[$linkedid] = $routeType;
+    } else {
+        // Определяем тип звонка по каналу, если не установлен
+        $channel = (string)($event->getKey('Channel') ?? $event->getKey('DestChannel') ?? '');
+        $destChannel = (string)($event->getKey('DestChannel') ?? '');
+        if (strpos($channel, 'from-queue') !== false || strpos($destChannel, 'from-queue') !== false ||
+            strpos($channel, 'from-ringgroups') !== false || strpos($destChannel, 'from-ringgroups') !== false) {
+            $routeType = 'multi';
+            $globalsObj->callRouteTypes[$linkedid] = $routeType;
+            if ($linkedidOriginal !== $linkedid) {
+                $globalsObj->callRouteTypes[$linkedidOriginal] = $routeType;
+            }
+        }
     }
     if (empty($existingEntry['user_id'])) {
         $existingEntry['user_id'] = $helper->getUSER_IDByIntNum($exten);
@@ -1857,6 +1869,19 @@ function callme_handle_dial_begin_common(
         }
     }
     if ($hasUnshownRinging) {
+        callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
+    }
+
+    // Для multi-звонков (очередь) открываем карточки сразу при DialBegin, если CALL_ID уже зарегистрирован
+    // Это fallback на случай, если UserEvent CallMeRingingStart не приходит из Asterisk
+    if ($call_id && $routeType === 'multi') {
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'intNum' => $exten,
+            'route_type' => $routeType,
+            'call_id' => $call_id,
+            'ringingIntNums' => array_keys($globalsObj->ringingIntNums[$linkedid] ?? array()),
+        ), 'DialBegin: Multi call detected, showing cards for all ringing numbers');
         callme_show_cards_for_ringing($linkedid, $helper, $globalsObj);
     }
 
