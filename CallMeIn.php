@@ -2138,6 +2138,7 @@ function callme_handle_dial_begin_common(
             
             // ПРИОРИТЕТ 0.5: Ищем call_id по ORIGINAL_LINKEDID через номер вызывающего (если маппинг еще не получен)
             // VarSetEvent для __CALLME_LINKEDID может прийти ПОСЛЕ DialBegin, поэтому ищем по номеру вызывающего
+            // КРИТИЧНО: Для очередей ищем call_id по самому свежему inbound звонку с тем же номером вызывающего
             if (!$call_id && $normalizedCaller !== '') {
                 // Ищем самый свежий inbound звонок с тем же номером вызывающего
                 $bestCallId = null;
@@ -2158,8 +2159,14 @@ function callme_handle_dial_begin_common(
                     // Проверяем совпадение номера вызывающего через callCrmData
                     $matchesCaller = false;
                     if (isset($globalsObj->callCrmData[$candidateLinkedid])) {
-                        // Для точного поиска можно сравнить номер из CRM, но пока используем timestamp (самый свежий)
-                        $matchesCaller = true;
+                        $crmData = $globalsObj->callCrmData[$candidateLinkedid];
+                        $crmCaller = $crmData['callerNumber'] ?? '';
+                        if ($crmCaller !== '' && $crmCaller === $normalizedCaller) {
+                            $matchesCaller = true;
+                        } else {
+                            // Если номер не совпадает точно, но есть callCrmData - считаем потенциальным кандидатом
+                            $matchesCaller = true;
+                        }
                     }
                     
                     if (!$matchesCaller) {
@@ -2197,21 +2204,27 @@ function callme_handle_dial_begin_common(
                     }
                 }
                 
-                if ($bestCallId && $bestLinkedid && $maxTimestamp > (time() - 120)) {
-                    // Используем только если звонок очень свежий (не старше 2 минут)
-                    $call_id = $bestCallId;
-                    $sourceLinkedid = $bestLinkedid;
-                    callme_clone_call_context($sourceLinkedid, $linkedid, $call_id, $globalsObj);
-                    $helper->writeToLog(array(
-                        'linkedid' => $linkedid,
-                        'foundLinkedid' => $sourceLinkedid,
-                        'call_id' => $call_id,
-                        'channel' => $channel,
-                        'exten' => $exten,
-                        'callerNumber' => $normalizedCaller,
-                        'timestamp' => $maxTimestamp,
-                        'message' => 'Found by ORIGINAL_LINKEDID (fresh inbound call matching caller)',
-                    ), 'DialBegin: Found call_id for queue channel by ORIGINAL_LINKEDID (priority 0)');
+                // КРИТИЧНО: Используем самый свежий inbound звонок, даже если он старше 2 минут (для надежности)
+                // Но приоритет отдаем очень свежим звонкам (до 2 минут)
+                if ($bestCallId && $bestLinkedid) {
+                    $isVeryFresh = $maxTimestamp > (time() - 120);
+                    if ($isVeryFresh || empty($globalsObj->callIdByLinkedid[$linkedid])) {
+                        // Используем только если звонок очень свежий ИЛИ если для этого linkedid еще нет call_id
+                        $call_id = $bestCallId;
+                        $sourceLinkedid = $bestLinkedid;
+                        callme_clone_call_context($sourceLinkedid, $linkedid, $call_id, $globalsObj);
+                        $helper->writeToLog(array(
+                            'linkedid' => $linkedid,
+                            'foundLinkedid' => $sourceLinkedid,
+                            'call_id' => $call_id,
+                            'channel' => $channel,
+                            'exten' => $exten,
+                            'callerNumber' => $normalizedCaller,
+                            'timestamp' => $maxTimestamp,
+                            'isVeryFresh' => $isVeryFresh,
+                            'message' => 'Found by ORIGINAL_LINKEDID (fresh inbound call matching caller)',
+                        ), 'DialBegin: Found call_id for queue channel by ORIGINAL_LINKEDID (priority 0.5)');
+                    }
                 }
             }
             
@@ -2525,6 +2538,20 @@ function callme_handle_dial_begin_common(
     // КРИТИЧНО: Для multi-звонков (очередь) открываем карточки СРАЗУ при DialBegin БЕЗ ожидания UserEvent
     // В Asterisk 1.8 UserEvent НЕ передаются через AMI для очередей, поэтому определяем начало дозвона по DialBegin
     // Это основной механизм, а НЕ fallback!
+    // КРИТИЧНО: Проверяем routeType из callRouteTypes, если он не был установлен в переменной $routeType
+    if ($routeType !== 'multi' && isset($globalsObj->callRouteTypes[$linkedid])) {
+        $routeTypeFromGlobals = callme_normalize_route_type($globalsObj->callRouteTypes[$linkedid]);
+        if ($routeTypeFromGlobals === 'multi') {
+            $routeType = 'multi';
+            $helper->writeToLog(array(
+                'linkedid' => $linkedid,
+                'intNum' => $exten,
+                'routeTypeFromGlobals' => $routeTypeFromGlobals,
+                'message' => 'RouteType corrected from callRouteTypes globals',
+            ), 'DialBegin: RouteType corrected for multi call');
+        }
+    }
+    
     if ($routeType === 'multi') {
         // Показываем карточки сразу, если call_id уже найден
         if ($call_id) {
@@ -2552,6 +2579,7 @@ function callme_handle_dial_begin_common(
                 'intNum' => $exten,
                 'route_type' => $routeType,
                 'channel' => (string)($event->getKey('Channel') ?? ''),
+                'callIdByLinkedid' => array_keys($globalsObj->callIdByLinkedid),
                 'message' => 'Multi call detected but call_id not found yet, will show when found',
             ), 'DialBegin: Multi call detected, waiting for call_id');
         }
