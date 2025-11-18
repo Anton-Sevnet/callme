@@ -1070,10 +1070,70 @@ $pamiClient->registerEventListener(
         }
         $ringEntry = $globalsObj->ringingIntNums[$linkedid][$intNum] ?? null;
         $ringState = strtoupper((string)($ringEntry['state'] ?? ''));
+        $channel = (string)($event->getChannel() ?? '');
+        $cause = (string)($event->getKey('Cause') ?? '');
+        
+        // Фильтруем технические Hangup для Local каналов в очередях
+        // В Asterisk 1.8 при звонках в очереди могут быть технические Hangup для Local каналов,
+        // которые не означают реальное завершение звонка
+        if (strpos($channel, 'Local/') === 0) {
+            // Local каналы в очередях - технические Hangup, игнорируем
+            if (strpos($channel, 'from-queue') !== false || strpos($channel, 'from-ringgroups') !== false) {
+                $helper->writeToLog(array(
+                    'linkedid' => $linkedid,
+                    'intNum' => $intNum,
+                    'agent_uniqueid' => $agentUniqueId,
+                    'channel' => $channel,
+                    'cause' => $cause,
+                    'reason' => 'technical_queue_local_hangup',
+                ), 'Skip cleanup: Technical queue Local channel hangup');
+                return;
+            }
+        }
         
         // Проверяем, является ли это Hangup канала Transfer
-        // Если получатель Transfer (intNum) является текущим получателем в transferHistory,
-        // то не закрываем карточку - звонок продолжается у получателя
+        // Если канал Transfer от другого номера (например, SIP/219-00000638 при intNum=220),
+        // то это Hangup канала Transfer, и не нужно закрывать карточку у получателя
+        $channelIntNum = callme_extract_internal_number($channel);
+        if ($channelIntNum && $channelIntNum !== $intNum) {
+            // Канал принадлежит другому номеру - это канал Transfer
+            // Проверяем, является ли intNum получателем Transfer
+            if (!empty($globalsObj->transferHistory)) {
+                $callId = callme_resolve_call_id($linkedid, $intNum, $globalsObj, $helper);
+                foreach ($globalsObj->transferHistory as $transferData) {
+                    if (!is_array($transferData)) {
+                        continue;
+                    }
+                    $currentIntNum = (string)($transferData['currentIntNum'] ?? '');
+                    $transferLinkedid = (string)($transferData['linkedid'] ?? '');
+                    $transferCallId = (string)($transferData['call_id'] ?? '');
+                    
+                    // Если это получатель Transfer (совпадает intNum), не закрываем карточку
+                    if ($currentIntNum === $intNum) {
+                        $linkedidMatches = ($transferLinkedid === $linkedid || $linkedid === '');
+                        $callIdMatches = ($callId && $transferCallId && $transferCallId === $callId);
+                        
+                        if ($linkedidMatches || $callIdMatches) {
+                            $helper->writeToLog(array(
+                                'linkedid' => $linkedid,
+                                'intNum' => $intNum,
+                                'channelIntNum' => $channelIntNum,
+                                'agent_uniqueid' => $agentUniqueId,
+                                'ringState' => $ringState,
+                                'transferLinkedid' => $transferLinkedid,
+                                'callId' => $callId,
+                                'transferCallId' => $transferCallId,
+                                'channel' => $channel,
+                                'reason' => 'transfer_channel_hangup',
+                            ), 'Skip cleanup: Transfer channel hangup, recipient active');
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Проверяем, является ли получатель Transfer текущим получателем в transferHistory
         if (!empty($globalsObj->transferHistory)) {
             $callId = callme_resolve_call_id($linkedid, $intNum, $globalsObj, $helper);
             foreach ($globalsObj->transferHistory as $transferData) {
@@ -1085,7 +1145,6 @@ $pamiClient->registerEventListener(
                 $transferCallId = (string)($transferData['call_id'] ?? '');
                 
                 // Если это получатель Transfer (совпадает intNum), не закрываем карточку
-                // Проверяем по intNum и либо по linkedid, либо по call_id
                 $isTransferRecipient = ($currentIntNum === $intNum);
                 $linkedidMatches = ($transferLinkedid === $linkedid || $linkedid === '');
                 $callIdMatches = ($callId && $transferCallId && $transferCallId === $callId);
@@ -1099,6 +1158,7 @@ $pamiClient->registerEventListener(
                         'transferLinkedid' => $transferLinkedid,
                         'callId' => $callId,
                         'transferCallId' => $transferCallId,
+                        'channel' => $channel,
                         'reason' => 'transfer_recipient_active',
                     ), 'Skip cleanup: Transfer recipient is active');
                     return;
@@ -1115,8 +1175,8 @@ $pamiClient->registerEventListener(
             'event' => 'HangupEvent',
             'reason' => 'agent_leg_hangup',
             'agent_uniqueid' => $agentUniqueId,
-            'channel' => $event->getChannel(),
-            'cause' => $event->getKey('Cause'),
+            'channel' => $channel,
+            'cause' => $cause,
             'cause_txt' => $event->getKey('Cause-txt'),
         ));
     },
@@ -1128,6 +1188,18 @@ $pamiClient->registerEventListener(
         if ($uniqueid === '') {
             return false;
         }
+        
+        // Фильтруем технические Hangup для Local каналов в очередях
+        // В Asterisk 1.8 при звонках в очереди могут быть технические Hangup для Local каналов,
+        // которые не означают реальное завершение звонка
+        $channel = (string)($event->getChannel() ?? '');
+        if (strpos($channel, 'Local/') === 0) {
+            // Local каналы в очередях - технические Hangup, игнорируем
+            if (strpos($channel, 'from-queue') !== false || strpos($channel, 'from-ringgroups') !== false) {
+                return false;
+            }
+        }
+        
         if (!isset($globalsObj->intNums[$uniqueid])) {
             return false;
         }
