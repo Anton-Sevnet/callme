@@ -2218,7 +2218,6 @@ function callme_handle_dial_begin_common(
                 }
             }
         }
-    }
 
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
         $globalsObj->ringingIntNums[$linkedid] = array();
@@ -3628,11 +3627,11 @@ $pamiClient->registerEventListener(
                 $uploadCmd = sprintf(
                     'php %s/upload_recording_async.php %s %s %s %s %s > /dev/null 2>&1 &',
                     __DIR__,
-                    escapeshellarg($call_id),
-                    escapeshellarg($FullFname),
-                    escapeshellarg($CallIntNum),
-                    escapeshellarg($CallDuration),
-                    escapeshellarg($CallDisposition)
+                    escapeshellarg((string)($call_id ?? '')),
+                    escapeshellarg((string)($FullFname ?? '')),
+                    escapeshellarg((string)($CallIntNum ?? '')),
+                    escapeshellarg((string)($CallDuration ?? '')),
+                    escapeshellarg((string)($CallDisposition ?? ''))
                 );
                 exec($uploadCmd);
                 
@@ -4077,10 +4076,10 @@ $pamiClient->registerEventListener(
                     $uploadCmd = sprintf(
                         'php %s/upload_recording_async.php %s %s %s %s %s > /dev/null 2>&1 &',
                         __DIR__,
-                        escapeshellarg($data['call_id']),
-                        escapeshellarg($data['record_url']),
-                        escapeshellarg($data['intNum']),
-                        escapeshellarg($duration),
+                        escapeshellarg((string)($data['call_id'] ?? '')),
+                        escapeshellarg((string)($data['record_url'] ?? '')),
+                        escapeshellarg((string)($data['intNum'] ?? '')),
+                        escapeshellarg((string)($duration ?? '')),
                         escapeshellarg('ANSWERED')
                     );
                     exec($uploadCmd);
