@@ -1069,7 +1069,45 @@ $pamiClient->registerEventListener(
             return;
         }
         $ringEntry = $globalsObj->ringingIntNums[$linkedid][$intNum] ?? null;
-        if (!$ringEntry || strtoupper((string)($ringEntry['state'] ?? '')) === 'ANSWER') {
+        $ringState = strtoupper((string)($ringEntry['state'] ?? ''));
+        
+        // Проверяем, является ли это Hangup канала Transfer
+        // Если получатель Transfer (intNum) является текущим получателем в transferHistory,
+        // то не закрываем карточку - звонок продолжается у получателя
+        if (!empty($globalsObj->transferHistory)) {
+            $callId = callme_resolve_call_id($linkedid, $intNum, $globalsObj, $helper);
+            foreach ($globalsObj->transferHistory as $transferData) {
+                if (!is_array($transferData)) {
+                    continue;
+                }
+                $currentIntNum = (string)($transferData['currentIntNum'] ?? '');
+                $transferLinkedid = (string)($transferData['linkedid'] ?? '');
+                $transferCallId = (string)($transferData['call_id'] ?? '');
+                
+                // Если это получатель Transfer (совпадает intNum), не закрываем карточку
+                // Проверяем по intNum и либо по linkedid, либо по call_id
+                $isTransferRecipient = ($currentIntNum === $intNum);
+                $linkedidMatches = ($transferLinkedid === $linkedid || $linkedid === '');
+                $callIdMatches = ($callId && $transferCallId && $transferCallId === $callId);
+                
+                if ($isTransferRecipient && ($linkedidMatches || $callIdMatches)) {
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'intNum' => $intNum,
+                        'agent_uniqueid' => $agentUniqueId,
+                        'ringState' => $ringState,
+                        'transferLinkedid' => $transferLinkedid,
+                        'callId' => $callId,
+                        'transferCallId' => $transferCallId,
+                        'reason' => 'transfer_recipient_active',
+                    ), 'Skip cleanup: Transfer recipient is active');
+                    return;
+                }
+            }
+        }
+        
+        // Не закрываем карточку, если звонок уже ответил
+        if (!$ringEntry || $ringState === 'ANSWER') {
             return;
         }
 
