@@ -75,6 +75,7 @@ use PAMI\Message\Event\BridgeEvent;
 use PAMI\Message\Action\ActionMessage;
 use PAMI\Message\Action\SetVarAction;
 use PAMI\Message\Action\PingAction;
+use PAMI\Message\Action\EventsAction;
 use PAMI\Client\Exception\ClientException;
 /*
 * end: for events listener
@@ -98,6 +99,25 @@ $pamiClient->open();
 echo 'Start';
 echo "\n\r";
 
+// Подписка на события AMI (включая UserEvent)
+// Категории: system, call, log, verbose, user, dialplan
+$eventsAction = new EventsAction(array('system', 'call', 'log', 'verbose', 'user', 'dialplan'));
+$eventsResponse = $pamiClient->send($eventsAction);
+if (!$eventsResponse->isSuccess()) {
+    $helper->writeToLog(array(
+        'error' => $eventsResponse->getMessage(),
+        'action' => 'EventsAction',
+        'event_mask' => array('system', 'call', 'log', 'verbose', 'user', 'dialplan')
+    ), 'Failed to subscribe to AMI events');
+    echo "ERROR: Failed to subscribe to AMI events: " . $eventsResponse->getMessage() . "\n\r";
+} else {
+    $helper->writeToLog(array(
+        'action' => 'EventsAction',
+        'event_mask' => array('system', 'call', 'log', 'verbose', 'user', 'dialplan'),
+        'response' => $eventsResponse->getMessage()
+    ), 'Successfully subscribed to AMI events');
+    echo "Successfully subscribed to AMI events\n\r";
+}
 
 $helper->writeToLog(NULL,
     'Start CallMeIn');
