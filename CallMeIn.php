@@ -1696,7 +1696,7 @@ $pamiClient->registerEventListener(
             }
 
             return;
-        } elseif ($variableName === 'CALLME_CARD_STATE') {
+        } elseif ($variableName === '__CALLME_CARD_STATE') {
             $payload = trim((string)$rawValue);
             if ($payload === '') {
                 $helper->writeToLog(array(
@@ -1915,7 +1915,7 @@ $pamiClient->registerEventListener(
         return
             $event instanceof VarSetEvent
             && (
-                $event->getVariableName() === 'CALLME_CARD_STATE'
+                $event->getVariableName() === '__CALLME_CARD_STATE'
                 || $event->getVariableName() === 'BRIDGEPEER'
                 || (
                     ($event->getVariableName() === 'CallMeFULLFNAME'
