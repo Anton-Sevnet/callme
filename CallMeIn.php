@@ -918,6 +918,7 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
 
     $agentUniqueId = (string) ($event->getKey('AgentUniqueid') ?? '');
     $direction = (string) ($event->getKey('Direction') ?? 'inbound');
+    $routeType = (string) ($event->getKey('RouteType') ?? '');
 
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
         $globalsObj->ringingIntNums[$linkedid] = array();
@@ -929,6 +930,7 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
     }
     $ringEntry['agent_uniqueid'] = $agentUniqueId ?: ($ringEntry['agent_uniqueid'] ?? null);
     $ringEntry['direction'] = $direction ?: ($ringEntry['direction'] ?? 'inbound');
+    $ringEntry['route_type'] = $routeType ?: ($ringEntry['route_type'] ?? 'direct');
     $ringEntry['state'] = 'RING';
     $ringEntry['timestamp'] = time();
     $ringEntry['shown'] = callme_is_card_marked_shown($linkedid, $intNum, $globalsObj);
@@ -998,6 +1000,7 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
         'agentUniqueid' => $agentUniqueId,
         'direction' => $direction,
         'call_id' => $callId,
+        'route_type' => $ringEntry['route_type'],
         'ringOrder' => $globalsObj->ringOrder[$linkedid],
         'alreadyShown' => $ringEntry['shown'],
     ), 'UserEvent CallMeRingingStart');
