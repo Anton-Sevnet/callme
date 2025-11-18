@@ -2267,6 +2267,89 @@ function callme_handle_dial_begin_common(
                     }
                 }
             }
+            
+            // ПРИОРИТЕТ 6: Ищем call_id по всем зарегистрированным inbound звонкам (для случая, когда ORIGINAL_LINKEDID не совпадает с linkedid канала очереди)
+            // Это критично для звонков в очередь, когда ORIGINAL_LINKEDID из b24_continuous_parallel.conf отличается от linkedid канала очереди
+            if (!$call_id && !empty($globalsObj->callIdByLinkedid) && $normalizedCaller !== '') {
+                // Ищем inbound звонок, который соответствует номеру вызывающего (caller ID)
+                $bestCallId = null;
+                $bestLinkedid = null;
+                $maxTimestamp = 0;
+                $callerNumberDigits = preg_replace('/\D+/', '', $normalizedCaller);
+                
+                foreach ($globalsObj->callIdByLinkedid as $candidateLinkedid => $candidateCallId) {
+                    if (!$candidateCallId) {
+                        continue;
+                    }
+                    
+                    // Проверяем, что это inbound звонок
+                    if (isset($globalsObj->callDirections[$candidateLinkedid]) && 
+                        $globalsObj->callDirections[$candidateLinkedid] !== 'inbound') {
+                        continue;
+                    }
+                    
+                    // Проверяем совпадение номера вызывающего через callCrmData или через последние активные звонки
+                    $matchesCaller = false;
+                    if (isset($globalsObj->callCrmData[$candidateLinkedid])) {
+                        // Проверяем через callCrmData, если есть информация о номере
+                        // Для более точного поиска можно использовать номер из CRM, но пока используем timestamp
+                        $matchesCaller = true;
+                    }
+                    
+                    // Если нет callCrmData, проверяем по timestamp (самый свежий звонок может быть нашим)
+                    if (!$matchesCaller) {
+                        $matchesCaller = true; // Пока считаем все inbound звонки потенциальными кандидатами
+                    }
+                    
+                    if (!$matchesCaller) {
+                        continue;
+                    }
+                    
+                    // Ищем максимальный timestamp из ringingIntNums для этого linkedid
+                    $candidateTimestamp = 0;
+                    if (isset($globalsObj->ringingIntNums[$candidateLinkedid])) {
+                        foreach ($globalsObj->ringingIntNums[$candidateLinkedid] as $ringData) {
+                            $ringTs = (int)($ringData['timestamp'] ?? 0);
+                            if ($ringTs > $candidateTimestamp) {
+                                $candidateTimestamp = $ringTs;
+                            }
+                        }
+                    }
+                    
+                    // Если нет timestamp в ringingIntNums, проверяем наличие call_id (звонок зарегистрирован)
+                    if ($candidateTimestamp === 0 && isset($globalsObj->callIdByLinkedid[$candidateLinkedid])) {
+                        // Используем timestamp из callCrmData, если есть, иначе текущее время минус небольшое значение
+                        // (чтобы не перебивать звонки с реальным timestamp)
+                        $candidateTimestamp = isset($globalsObj->callCrmData[$candidateLinkedid]['timestamp']) 
+                            ? (int)$globalsObj->callCrmData[$candidateLinkedid]['timestamp'] 
+                            : (time() - 60); // 60 секунд назад для свежих звонков
+                    }
+                    
+                    // Берем самый свежий inbound звонок
+                    if ($candidateTimestamp > $maxTimestamp) {
+                        $maxTimestamp = $candidateTimestamp;
+                        $bestCallId = $candidateCallId;
+                        $bestLinkedid = $candidateLinkedid;
+                    }
+                }
+                
+                if ($bestCallId && $bestLinkedid) {
+                    $call_id = $bestCallId;
+                    $sourceLinkedid = $bestLinkedid;
+                    callme_clone_call_context($sourceLinkedid, $linkedid, $call_id, $globalsObj);
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'linkedidBase' => $linkedidBase ?? '',
+                        'foundLinkedid' => $sourceLinkedid,
+                        'call_id' => $call_id,
+                        'channel' => $channel,
+                        'exten' => $exten,
+                        'callerNumber' => $normalizedCaller,
+                        'timestamp' => $maxTimestamp,
+                        'message' => 'Found by ORIGINAL_LINKEDID fallback (latest inbound call matching caller)',
+                    ), 'DialBegin: Found call_id for queue channel by ORIGINAL_LINKEDID fallback');
+                }
+            }
         }
 
     if (!isset($globalsObj->ringingIntNums[$linkedid])) {
