@@ -1431,6 +1431,56 @@ function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs
     if (!$callId && isset($globalsObj->calls[$linkedid])) {
         $callId = $globalsObj->calls[$linkedid];
     }
+    
+    // КРИТИЧНО: Для звонков в очередь linkedid из UserEvent (оригинальный) может не совпадать
+    // с linkedid, для которого зарегистрирован call_id (uniqueid основного канала).
+    // Ищем call_id по всем связанным linkedid через AgentUniqueid или базовый linkedid.
+    if (!$callId && $agentUniqueId !== '') {
+        // Ищем linkedid, связанный с AgentUniqueid
+        $agentLinkedid = $globalsObj->uniqueidToLinkedid[$agentUniqueId] ?? null;
+        if ($agentLinkedid && $agentLinkedid !== $linkedid) {
+            // Пробуем найти call_id по linkedid агента
+            $callId = $globalsObj->callIdByLinkedid[$agentLinkedid] ?? ($globalsObj->calls[$agentLinkedid] ?? null);
+            if ($callId) {
+                // Создаем маппинг для оригинального linkedid
+                $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+                $globalsObj->callsByCallId[$callId] = $linkedid;
+            }
+        }
+    }
+    
+    // Если все еще не нашли, ищем по базовому linkedid (без суффикса .X)
+    if (!$callId && $linkedid !== '') {
+        $linkedidBase = explode('.', (string)$linkedid)[0] ?? '';
+        if ($linkedidBase !== '' && $linkedidBase !== $linkedid) {
+            // Ищем call_id по базовому linkedid
+            $callId = $globalsObj->callIdByLinkedid[$linkedidBase] ?? ($globalsObj->calls[$linkedidBase] ?? null);
+            if ($callId) {
+                // Создаем маппинг для оригинального linkedid
+                $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+                $globalsObj->callsByCallId[$callId] = $linkedid;
+            }
+        }
+    }
+    
+    // Если все еще не нашли, ищем по всем linkedid в callIdByLinkedid, которые могут быть связаны
+    // с этим звонком через intNum или через другие механизмы
+    if (!$callId && $intNum !== '') {
+        // Ищем call_id по всем linkedid, которые имеют этот intNum в ringingIntNums
+        foreach ($globalsObj->ringingIntNums as $candidateLinkedid => $ringingData) {
+            if (isset($ringingData[$intNum])) {
+                $candidateCallId = $globalsObj->callIdByLinkedid[$candidateLinkedid] ?? null;
+                if ($candidateCallId) {
+                    $callId = $candidateCallId;
+                    // Создаем маппинг для оригинального linkedid
+                    $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+                    $globalsObj->callsByCallId[$callId] = $linkedid;
+                    break;
+                }
+            }
+        }
+    }
+    
     if (!$callId && !empty($globalsObj->transferHistory)) {
         foreach ($globalsObj->transferHistory as $transferData) {
             if (!is_array($transferData)) {
@@ -2918,6 +2968,14 @@ $pamiClient->registerEventListener(
             return;
         } elseif ($variableName === 'CALLME_CARD_STATE') {
             $payload = trim((string)$rawValue);
+            $helper->writeToLog(array(
+                'variable' => 'CALLME_CARD_STATE',
+                'payload' => $payload,
+                'uniqueid' => $callUniqueid,
+                'linkedid' => $linkedid,
+                'channel' => (string)($event->getChannel() ?? ''),
+            ), 'CALLME_CARD_STATE VarSetEvent received');
+            
             if ($payload === '') {
                 $helper->writeToLog(array(
                     'uniqueid' => $callUniqueid,
@@ -2980,9 +3038,22 @@ $pamiClient->registerEventListener(
             if ($payloadCallId !== '') {
                 $callId = $payloadCallId;
             }
+            // КРИТИЧНО: Для очередей (multi) call_id может быть не в payload, ищем по linkedid
+            // Приоритет 1: По linkedid из payload или события
             if (!$callId && $linkedid) {
                 $callId = $globalsObj->callIdByLinkedid[$linkedid] ?? null;
             }
+            // Приоритет 2: По базовому linkedid (для очередей linkedid может быть с суффиксом .X)
+            if (!$callId && $linkedid && strpos((string)$linkedid, '.') !== false) {
+                $linkedidBase = explode('.', (string)$linkedid)[0] ?? '';
+                if ($linkedidBase !== '' && isset($globalsObj->callIdByLinkedid[$linkedidBase])) {
+                    $callId = $globalsObj->callIdByLinkedid[$linkedidBase];
+                    // Создаем маппинг для текущего linkedid
+                    $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+                    $globalsObj->callsByCallId[$callId] = $linkedid;
+                }
+            }
+            // Приоритет 3: По intNum
             if (!$callId && isset($globalsObj->callIdByInt[$intNum])) {
                 $callId = $globalsObj->callIdByInt[$intNum];
                 if (!$linkedid) {
@@ -2992,15 +3063,29 @@ $pamiClient->registerEventListener(
                     }
                 }
             }
+            // Приоритет 4: По uniqueid из события
             if (!$callId && $callUniqueid && isset($globalsObj->calls[$callUniqueid])) {
                 $callId = $globalsObj->calls[$callUniqueid];
                 if ($linkedid) {
                     $globalsObj->callIdByLinkedid[$linkedid] = $callId;
                 }
             }
+            // Приоритет 5: По linkedid напрямую в calls
             if (!$callId && $linkedid && isset($globalsObj->calls[$linkedid])) {
                 $callId = $globalsObj->calls[$linkedid];
             }
+            // Приоритет 6: По базовому linkedid в calls (для очередей)
+            if (!$callId && $linkedid && strpos((string)$linkedid, '.') !== false) {
+                $linkedidBase = explode('.', (string)$linkedid)[0] ?? '';
+                if ($linkedidBase !== '' && isset($globalsObj->calls[$linkedidBase])) {
+                    $callId = $globalsObj->calls[$linkedidBase];
+                    // Создаем маппинги
+                    $globalsObj->callIdByLinkedid[$linkedid] = $callId;
+                    $globalsObj->callIdByLinkedid[$linkedidBase] = $callId;
+                    $globalsObj->callsByCallId[$callId] = $linkedidBase;
+                }
+            }
+            // Приоритет 7: Поиск через helper
             if (!$callId) {
                 $callId = $helper->findCallIdByIntNum($intNum, $globalsObj);
             }
