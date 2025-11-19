@@ -340,10 +340,18 @@ class HelperFuncs {
 	}
 //    загрузка аудиофайла
 	public function uploadRecorderedFileTruth($call_id, $recordedfile, $recordUrl){
+        // Извлекаем имя файла из URL для параметра FILENAME
+        // Согласно документации API, при использовании RECORD_URL, FILENAME должен быть просто именем файла
+        $filename = basename(parse_url($recordUrl, PHP_URL_PATH));
+        if (empty($filename)) {
+            // Если не удалось извлечь имя, используем имя из $recordedfile
+            $filename = basename(parse_url($recordedfile, PHP_URL_PATH));
+        }
+        
         $result = $this->getBitrixApi(array(
             'CALL_ID' => $call_id, //идентификатор звонка из результатов вызова метода telephony.externalCall.register
             'RECORD_URL' => $recordUrl, //url на запись звонка для сохранения в Битрикс24
-            'FILENAME' => $recordedfile
+            'FILENAME' => $filename // имя файла (без пути)
         ), 'telephony.externalCall.attachRecord');
         if ($result){
             return $result;
