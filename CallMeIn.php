@@ -1685,11 +1685,16 @@ $pamiClient->registerEventListener(
                             'responsibleIntNum' => $responsibleIntNum
                         ), 'Found responsible internal number from CRM');
                     } else {
-                        $helper->writeToLog("Responsible user $responsibleUserId has no internal number, will register later.", 
-                            'Responsible determination');
+                        // CRM объект найден, но у ответственного нет внутреннего номера
+                        // Используем USER_ID из CRM, внутренний номер возьмем из fallback
+                        $selectedUserId = $responsibleUserId;
+                        $helper->writeToLog(array(
+                            'responsibleUserId' => $responsibleUserId,
+                            'note' => 'CRM entity found, but responsible user has no internal number, will use fallback internal number if available'
+                        ), 'Responsible determination');
                     }
                 } else {
-                    $helper->writeToLog("No responsible found in CRM, will wait for agent registration.", 
+                    $helper->writeToLog("No responsible found in CRM, will use fallback user.", 
                         'Responsible determination');
                 }
 
@@ -1709,20 +1714,47 @@ $pamiClient->registerEventListener(
                 $globalsObj->ringingIntNums[$callLinkedid] = array();
                 $globalsObj->ringOrder[$callLinkedid] = array();
 
-                $registerIntNum = null;
+                // Определяем USER_ID для регистрации:
+                // 1. Если найден CRM объект - используем его USER_ID
+                // 2. Если CRM объект не найден - используем fallback USER_ID
                 $registerUserId = null;
-                if ($selectedIntNum && $selectedUserId) {
-                    $registerIntNum = $selectedIntNum;
+                if ($selectedUserId) {
+                    // CRM объект найден - используем его USER_ID
                     $registerUserId = $selectedUserId;
-                } elseif ($fallbackUserInt) {
-                    $registerIntNum = $fallbackUserInt;
-                    $registerUserId = $fallbackUserId ?: null;
+                } elseif ($fallbackUserId) {
+                    // CRM объект не найден - используем fallback USER_ID
+                    $registerUserId = $fallbackUserId;
                 }
 
+                // Определяем внутренний номер для регистрации:
+                // Используем внутренний номер из fallback, если доступен
+                // Если у ответственного из CRM есть внутренний номер - используем его
+                $registerIntNum = null;
+                if ($selectedIntNum) {
+                    // У ответственного из CRM есть внутренний номер
+                    $registerIntNum = $selectedIntNum;
+                } elseif ($fallbackUserInt) {
+                    // Используем внутренний номер из fallback
+                    $registerIntNum = $fallbackUserInt;
+                }
+                // Если внутреннего номера нет, передадим пустую строку в runInputCall
+
                 $callResult = null;
-                if ($registerIntNum) {
+                // Регистрируем звонок, если определен USER_ID (из CRM или fallback)
+                if ($registerUserId) {
+                    $helper->writeToLog(array(
+                        'linkedid' => $callLinkedid,
+                        'extNum' => $extNum,
+                        'line' => $exten,
+                        'registerUserId' => $registerUserId,
+                        'registerIntNum' => $registerIntNum ?: '(empty)',
+                        'source' => $selectedUserId ? 'CRM' : 'fallback',
+                        'crm_responsibleUserId' => $responsibleUserId,
+                        'fallbackUserId' => $fallbackUserId,
+                    ), 'Registering call with determined user');
+                    
                     $callResult = $helper->runInputCall(
-                        $registerIntNum,
+                        $registerIntNum ?: '', // Передаем пустую строку, если внутреннего номера нет
                         $extNum,
                         $exten,
                         $srmSource,
@@ -1735,7 +1767,7 @@ $pamiClient->registerEventListener(
                         'line' => $exten,
                         'responsibleUserId' => $responsibleUserId,
                         'fallbackUserId' => $fallbackUserId,
-                    ), 'Immediate registration skipped: no internal number resolved');
+                    ), 'Immediate registration skipped: no user ID resolved (neither CRM nor fallback)');
                 }
 
                 if ($callResult && isset($callResult['CALL_ID'])) {
