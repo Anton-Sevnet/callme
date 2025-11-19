@@ -297,11 +297,11 @@ class HelperFuncs {
             'RECORD_URL' => '' // Пустая строка - запись будет прикреплена потом
         );
 
-        // Если есть userId, используем только USER_ID (не используем USER_PHONE_INNER)
-        if ($userId !== null) {
+        // Если есть userId (и он > 0), используем только USER_ID (не используем USER_PHONE_INNER)
+        if ($userId !== null && (int)$userId > 0) {
             $payload['USER_ID'] = (int)$userId;
         } elseif ($intNum !== null && $intNum !== '') {
-            // Если userId нет, но есть intNum, используем USER_PHONE_INNER
+            // Если userId нет или он невалидный, но есть intNum, используем USER_PHONE_INNER
             $payload['USER_PHONE_INNER'] = $intNum;
         }
 

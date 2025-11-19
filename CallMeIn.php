@@ -2571,7 +2571,11 @@ $pamiClient->registerEventListener(
                 }
                 if ($primaryTarget) {
                     $finishIntNum = $primaryTarget['int_num'] ?? $finishIntNum;
-                    $finishUserId = $primaryTarget['user_id'] ?? null;
+                    $primaryUserId = $primaryTarget['user_id'] ?? null;
+                    // Проверяем, что user_id валидный (> 0)
+                    if ($primaryUserId !== null && (int)$primaryUserId > 0) {
+                        $finishUserId = (int)$primaryUserId;
+                    }
                 }
                 if ($finishIntNum && $finishUserId === null) {
                     $finishUserId = $helper->getUSER_IDByIntNum($finishIntNum);
@@ -2579,31 +2583,50 @@ $pamiClient->registerEventListener(
 
                 // Если пользователя с вызываемым номером нет в Б24, используем USER_ID (ответственный из CRM или fallback)
                 if ($finishIntNum && $finishUserId === null) {
-                    // Пробуем взять ответственного из CRM
-                    if ($linkedid && !empty($globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'])) {
-                        $finishUserId = (int)$globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'];
-                        $helper->writeToLog(array(
-                            'finishIntNum' => $finishIntNum,
-                            'finishUserId' => $finishUserId,
-                            'source' => 'CRM responsible',
-                        ), 'User not found by intNum, using CRM responsible user');
+                    // Пробуем взять ответственного из CRM (проверяем, что значение валидное и > 0)
+                    if ($linkedid && isset($globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'])) {
+                        $crmResponsibleId = $globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'];
+                        if (!empty($crmResponsibleId) && is_numeric($crmResponsibleId)) {
+                            $crmResponsibleId = (int)$crmResponsibleId;
+                            if ($crmResponsibleId > 0) {
+                                $finishUserId = $crmResponsibleId;
+                                $helper->writeToLog(array(
+                                    'finishIntNum' => $finishIntNum,
+                                    'finishUserId' => $finishUserId,
+                                    'source' => 'CRM responsible',
+                                ), 'User not found by intNum, using CRM responsible user');
+                            }
+                        }
                     }
                     // Если нет ответственного из CRM, используем fallback
-                    if ($finishUserId === null) {
+                    if ($finishUserId === null || $finishUserId <= 0) {
                         $finishUserId = $helper->getFallbackResponsibleUserId();
-                        if ($finishUserId !== null) {
+                        if ($finishUserId !== null && $finishUserId > 0) {
                             $helper->writeToLog(array(
                                 'finishIntNum' => $finishIntNum,
                                 'finishUserId' => $finishUserId,
                                 'source' => 'fallback',
                             ), 'User not found by intNum, using fallback user');
+                        } else {
+                            $finishUserId = null;
                         }
                     }
                 }
 
                 $finishResult = false;
-                // Если есть finishUserId, завершаем по USER_ID (не используя USER_PHONE_INNER)
-                if ($finishUserId !== null) {
+                // Логируем состояние перед завершением
+                $helper->writeToLog(array(
+                    'finishIntNum' => $finishIntNum,
+                    'finishUserId' => $finishUserId,
+                    'finishUserIdType' => gettype($finishUserId),
+                    'finishUserIdIsNull' => ($finishUserId === null),
+                    'finishUserIdGT0' => ($finishUserId !== null && $finishUserId > 0),
+                    'linkedid' => $linkedid,
+                    'crmResponsibleUserId' => $linkedid ? ($globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'] ?? 'not set') : 'no linkedid',
+                ), 'Call finish - determining finish method');
+
+                // Если есть finishUserId (> 0), завершаем по USER_ID (не используя USER_PHONE_INNER)
+                if ($finishUserId !== null && $finishUserId > 0) {
                     $finishResult = $helper->finishCall($call_id, null, $CallDuration, $statusCode, $finishUserId);
                     $helper->writeToLog(array(
                         'finishIntNum' => $finishIntNum,
@@ -2612,10 +2635,11 @@ $pamiClient->registerEventListener(
                         'result' => $finishResult,
                         'duration' => $CallDuration,
                         'batchTargets' => $batchHide['targets'],
+                        'method' => 'USER_ID',
                     ), 'Call finished after batch hide');
                     echo "call finished immediately in B24, status: $statusCode\n";
                 } elseif ($finishIntNum) {
-                    // Если finishUserId нет, но есть finishIntNum, используем старое поведение (USER_PHONE_INNER)
+                    // Если finishUserId нет или он невалидный, но есть finishIntNum, используем старое поведение (USER_PHONE_INNER)
                     $finishResult = $helper->finishCall($call_id, $finishIntNum, $CallDuration, $statusCode, null);
                     $helper->writeToLog(array(
                         'finishIntNum' => $finishIntNum,
@@ -2624,6 +2648,8 @@ $pamiClient->registerEventListener(
                         'result' => $finishResult,
                         'duration' => $CallDuration,
                         'batchTargets' => $batchHide['targets'],
+                        'method' => 'USER_PHONE_INNER',
+                        'reason' => $finishUserId === null ? 'finishUserId is null' : ($finishUserId <= 0 ? 'finishUserId <= 0' : 'unknown'),
                     ), 'Call finished after batch hide');
                     echo "call finished immediately in B24, status: $statusCode\n";
                 } else {
