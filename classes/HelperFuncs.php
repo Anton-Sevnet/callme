@@ -282,23 +282,27 @@ class HelperFuncs {
 	 * Finish call in Bitrix24 without recording (immediate)
 	 *
 	 * @param string $call_id
-	 * @param string $intNum
+	 * @param string|null $intNum Internal number (optional, not used if userId is provided)
 	 * @param string $duration
 	 * @param int $statusCode
+	 * @param int|null $userId User ID (if provided, USER_PHONE_INNER will not be used)
 	 *
 	 * @return array|false Result from API or false on error
 	 */
     public function finishCall($call_id, $intNum, $duration, $statusCode, $userId = null){
         $payload = array(
-            'USER_PHONE_INNER' => $intNum,
             'CALL_ID' => $call_id,
             'STATUS_CODE' => $statusCode,
             'DURATION' => $duration,
             'RECORD_URL' => '' // Пустая строка - запись будет прикреплена потом
         );
 
+        // Если есть userId, используем только USER_ID (не используем USER_PHONE_INNER)
         if ($userId !== null) {
             $payload['USER_ID'] = (int)$userId;
+        } elseif ($intNum !== null && $intNum !== '') {
+            // Если userId нет, но есть intNum, используем USER_PHONE_INNER
+            $payload['USER_PHONE_INNER'] = $intNum;
         }
 
 		$result = $this->getBitrixApi($payload, 'telephony.externalcall.finish');

@@ -2577,9 +2577,46 @@ $pamiClient->registerEventListener(
                     $finishUserId = $helper->getUSER_IDByIntNum($finishIntNum);
                 }
 
+                // Если пользователя с вызываемым номером нет в Б24, используем USER_ID (ответственный из CRM или fallback)
+                if ($finishIntNum && $finishUserId === null) {
+                    // Пробуем взять ответственного из CRM
+                    if ($linkedid && !empty($globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'])) {
+                        $finishUserId = (int)$globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'];
+                        $helper->writeToLog(array(
+                            'finishIntNum' => $finishIntNum,
+                            'finishUserId' => $finishUserId,
+                            'source' => 'CRM responsible',
+                        ), 'User not found by intNum, using CRM responsible user');
+                    }
+                    // Если нет ответственного из CRM, используем fallback
+                    if ($finishUserId === null) {
+                        $finishUserId = $helper->getFallbackResponsibleUserId();
+                        if ($finishUserId !== null) {
+                            $helper->writeToLog(array(
+                                'finishIntNum' => $finishIntNum,
+                                'finishUserId' => $finishUserId,
+                                'source' => 'fallback',
+                            ), 'User not found by intNum, using fallback user');
+                        }
+                    }
+                }
+
                 $finishResult = false;
-                if ($finishIntNum) {
-                    $finishResult = $helper->finishCall($call_id, $finishIntNum, $CallDuration, $statusCode, $finishUserId);
+                // Если есть finishUserId, завершаем по USER_ID (не используя USER_PHONE_INNER)
+                if ($finishUserId !== null) {
+                    $finishResult = $helper->finishCall($call_id, null, $CallDuration, $statusCode, $finishUserId);
+                    $helper->writeToLog(array(
+                        'finishIntNum' => $finishIntNum,
+                        'finishUserId' => $finishUserId,
+                        'statusCode' => $statusCode,
+                        'result' => $finishResult,
+                        'duration' => $CallDuration,
+                        'batchTargets' => $batchHide['targets'],
+                    ), 'Call finished after batch hide');
+                    echo "call finished immediately in B24, status: $statusCode\n";
+                } elseif ($finishIntNum) {
+                    // Если finishUserId нет, но есть finishIntNum, используем старое поведение (USER_PHONE_INNER)
+                    $finishResult = $helper->finishCall($call_id, $finishIntNum, $CallDuration, $statusCode, null);
                     $helper->writeToLog(array(
                         'finishIntNum' => $finishIntNum,
                         'finishUserId' => $finishUserId,
