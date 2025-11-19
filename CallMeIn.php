@@ -73,7 +73,6 @@ use PAMI\Message\Event\VarSetEvent;
 use PAMI\Message\Event\HangupEvent;
 use PAMI\Message\Event\BridgeEvent;
 use PAMI\Message\Action\ActionMessage;
-use PAMI\Message\Action\SetVarAction;
 use PAMI\Message\Action\PingAction;
 use PAMI\Message\Action\EventsAction;
 use PAMI\Client\Exception\ClientException;
@@ -1926,6 +1925,66 @@ $pamiClient->registerEventListener(
                 )
             );
         }
+);
+
+//обрабатываем NewstateEvent события для установки CALLME_CARD_STATE=RING на реальных SIP-каналах
+//Это работает, когда опции Dial b()/B() не выполняются (например, в очередях через Local-каналы)
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj, $callami) {
+        $channel = (string)$event->getKey('Channel');
+        $channelStateDesc = (string)$event->getKey('ChannelStateDesc');
+        
+        // Проверяем, что это реальный SIP-канал в состоянии Ringing
+        if (strpos($channel, 'SIP/') !== 0 || $channelStateDesc !== 'Ringing') {
+            return;
+        }
+        
+        // Извлекаем внутренний номер из имени канала (например, SIP/219-000008b3 -> 219)
+        $intNum = callme_extract_internal_number($channel);
+        if (!$intNum || strlen($intNum) < 2 || strlen($intNum) > 6) {
+            $helper->writeToLog(array(
+                'channel' => $channel,
+                'channelStateDesc' => $channelStateDesc,
+            ), 'NewstateEvent: Could not extract internal number');
+            return;
+        }
+        
+        $uniqueid = $event->getKey('Uniqueid');
+        $linkedid = $event->getKey('Linkedid') ?: ($globalsObj->uniqueidToLinkedid[$uniqueid] ?? null);
+        
+        // Проверяем, что переменная CALLME_CARD_STATE ещё не установлена для этого канала
+        // Это предотвращает дублирование при повторных событиях Ringing
+        $existingState = $globalsObj->ringingIntNums[$linkedid][$intNum]['state'] ?? null;
+        if ($existingState === 'RING') {
+            return; // Уже обработано
+        }
+        
+        // Устанавливаем переменную CALLME_CARD_STATE=RING через SetVar
+        // Это создаст VarSetEvent, который обработает существующая логика
+        try {
+            $response = $callami->SetVar('__CALLME_CARD_STATE', 'RING:' . $intNum, $channel);
+            
+            $helper->writeToLog(array(
+                'channel' => $channel,
+                'intNum' => $intNum,
+                'uniqueid' => $uniqueid,
+                'linkedid' => $linkedid,
+                'response' => $response ? ($response->getMessage() ?? 'OK') : 'no response',
+            ), 'NewstateEvent: Set CALLME_CARD_STATE=RING via SetVar');
+        } catch (\Throwable $e) {
+            $helper->writeToLog(array(
+                'channel' => $channel,
+                'intNum' => $intNum,
+                'error' => $e->getMessage(),
+            ), 'NewstateEvent: Failed to set CALLME_CARD_STATE');
+        }
+    },
+    function (EventMessage $event) use ($globalsObj) {
+        // Обрабатываем только события Newstate с состоянием Ringing на реальных SIP-каналах
+        return $event->getName() === 'Newstate'
+            && strpos((string)$event->getKey('Channel'), 'SIP/') === 0
+            && (string)$event->getKey('ChannelStateDesc') === 'Ringing';
+    }
 );
 
 //обрабатываем HoldEvent события
