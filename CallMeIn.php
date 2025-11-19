@@ -1981,7 +1981,7 @@ $pamiClient->registerEventListener(
     },
     function (EventMessage $event) use ($globalsObj) {
         // Обрабатываем только события Newstate с состоянием Ringing на реальных SIP-каналах
-        return $event->getName() === 'Newstate'
+        return $event->getKey('Event') === 'Newstate'
             && strpos((string)$event->getKey('Channel'), 'SIP/') === 0
             && (string)$event->getKey('ChannelStateDesc') === 'Ringing';
     }
