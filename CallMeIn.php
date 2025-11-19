@@ -1978,13 +1978,13 @@ $pamiClient->registerEventListener(
             return;
         }
         
-        // Проверяем состояние Ringing
-        if ($channelStateDesc !== 'Ringing') {
+        // Проверяем состояние Ringing (учитываем и "Ringing", и "Ring" для совместимости с Asterisk 1.8.13)
+        if ($channelStateDesc !== 'Ringing' && $channelStateDesc !== 'Ring') {
             $helper->writeToLog(array(
                 'channel' => $channel,
                 'channelStateDesc' => $channelStateDesc,
-                'reason' => 'Not Ringing state',
-            ), 'NewstateEvent: Skipped (not Ringing)');
+                'reason' => 'Not Ringing/Ring state',
+            ), 'NewstateEvent: Skipped (not Ringing/Ring)');
             return;
         }
         
