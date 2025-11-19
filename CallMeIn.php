@@ -1931,11 +1931,42 @@ $pamiClient->registerEventListener(
 //Это работает, когда опции Dial b()/B() не выполняются (например, в очередях через Local-каналы)
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj, $callami) {
+        // Логируем все события Newstate для диагностики
+        $eventName = $event->getKey('Event');
+        if ($eventName !== 'Newstate') {
+            return; // Не наше событие
+        }
+        
         $channel = (string)$event->getKey('Channel');
         $channelStateDesc = (string)$event->getKey('ChannelStateDesc');
+        $channelState = $event->getKey('ChannelState');
         
-        // Проверяем, что это реальный SIP-канал в состоянии Ringing
-        if (strpos($channel, 'SIP/') !== 0 || $channelStateDesc !== 'Ringing') {
+        // Логируем все события Newstate для диагностики
+        $helper->writeToLog(array(
+            'event' => $eventName,
+            'channel' => $channel,
+            'channelState' => $channelState,
+            'channelStateDesc' => $channelStateDesc,
+            'getName' => $event->getName(),
+            'getKey_Event' => $event->getKey('Event'),
+        ), 'NewstateEvent: Received event (debug)');
+        
+        // Проверяем, что это реальный SIP-канал
+        if (strpos($channel, 'SIP/') !== 0) {
+            $helper->writeToLog(array(
+                'channel' => $channel,
+                'reason' => 'Not a SIP channel',
+            ), 'NewstateEvent: Skipped (not SIP)');
+            return;
+        }
+        
+        // Проверяем состояние Ringing
+        if ($channelStateDesc !== 'Ringing') {
+            $helper->writeToLog(array(
+                'channel' => $channel,
+                'channelStateDesc' => $channelStateDesc,
+                'reason' => 'Not Ringing state',
+            ), 'NewstateEvent: Skipped (not Ringing)');
             return;
         }
         
@@ -1945,6 +1976,7 @@ $pamiClient->registerEventListener(
             $helper->writeToLog(array(
                 'channel' => $channel,
                 'channelStateDesc' => $channelStateDesc,
+                'extractedIntNum' => $intNum,
             ), 'NewstateEvent: Could not extract internal number');
             return;
         }
@@ -1956,6 +1988,12 @@ $pamiClient->registerEventListener(
         // Это предотвращает дублирование при повторных событиях Ringing
         $existingState = $globalsObj->ringingIntNums[$linkedid][$intNum]['state'] ?? null;
         if ($existingState === 'RING') {
+            $helper->writeToLog(array(
+                'channel' => $channel,
+                'intNum' => $intNum,
+                'linkedid' => $linkedid,
+                'reason' => 'Already processed',
+            ), 'NewstateEvent: Skipped (already RING)');
             return; // Уже обработано
         }
         
@@ -1978,12 +2016,6 @@ $pamiClient->registerEventListener(
                 'error' => $e->getMessage(),
             ), 'NewstateEvent: Failed to set CALLME_CARD_STATE');
         }
-    },
-    function (EventMessage $event) use ($globalsObj) {
-        // Обрабатываем только события Newstate с состоянием Ringing на реальных SIP-каналах
-        return $event->getKey('Event') === 'Newstate'
-            && strpos((string)$event->getKey('Channel'), 'SIP/') === 0
-            && (string)$event->getKey('ChannelStateDesc') === 'Ringing';
     }
 );
 
