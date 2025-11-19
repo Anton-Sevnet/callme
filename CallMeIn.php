@@ -1931,8 +1931,26 @@ $pamiClient->registerEventListener(
 //Это работает, когда опции Dial b()/B() не выполняются (например, в очередях через Local-каналы)
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj, $callami) {
-        // Логируем все события Newstate для диагностики
+        // Логируем ВСЕ события для диагностики (чтобы понять, вызывается ли обработчик)
         $eventName = $event->getKey('Event');
+        $eventNameGetName = $event->getName();
+        
+        // Логируем только каждое 100-е событие, чтобы не засорять лог (или все события Newstate)
+        static $eventCounter = 0;
+        $eventCounter++;
+        
+        // Логируем все события Newstate и каждое 100-е другое событие
+        if ($eventName === 'Newstate' || $eventCounter % 100 === 0) {
+            $helper->writeToLog(array(
+                'counter' => $eventCounter,
+                'event_getKey' => $eventName,
+                'event_getName' => $eventNameGetName,
+                'channel' => $event->getKey('Channel'),
+                'channelStateDesc' => $event->getKey('ChannelStateDesc'),
+            ), 'NewstateEvent Handler: All events (debug)');
+        }
+        
+        // Проверяем, что это событие Newstate
         if ($eventName !== 'Newstate') {
             return; // Не наше событие
         }
