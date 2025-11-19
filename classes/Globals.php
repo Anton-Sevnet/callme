@@ -57,6 +57,8 @@ class Globals {
     public $transferHistory = array();     // [externalUniqueid => ['call_id'=>..., 'externalChannel'=>..., 'currentIntNum'=>..., 'history'=>[]]]
     // Состояние health-check AMI
     public $amiState = array();
+    // Кеш проверок существования пользователей по внутренним номерам (чтобы не проверять повторно)
+    public $userExistsByIntNum = array(); // [intNum => bool] - true если пользователь существует, false если нет
 
     static public function getInstance(){
 		if (null === self::$instance) {

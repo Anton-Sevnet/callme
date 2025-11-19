@@ -2577,12 +2577,28 @@ $pamiClient->registerEventListener(
                         $finishUserId = (int)$primaryUserId;
                     }
                 }
+                // Проверяем существование пользователя по intNum (один раз, с кешированием)
                 if ($finishIntNum && $finishUserId === null) {
-                    $finishUserId = $helper->getUSER_IDByIntNum($finishIntNum);
+                    // Проверяем кеш - уже проверяли этого пользователя?
+                    $intNumStr = (string)$finishIntNum;
+                    if (isset($globalsObj->userExistsByIntNum[$intNumStr])) {
+                        // Используем кеш
+                        if ($globalsObj->userExistsByIntNum[$intNumStr]) {
+                            $finishUserId = $helper->getUSER_IDByIntNum($finishIntNum);
+                        } else {
+                            // Пользователя нет - запоминаем это
+                            $finishUserId = false;
+                        }
+                    } else {
+                        // Проверяем первый раз и запоминаем результат
+                        $finishUserId = $helper->getUSER_IDByIntNum($finishIntNum);
+                        // Запоминаем результат проверки (true если userId > 0, false если пользователя нет)
+                        $globalsObj->userExistsByIntNum[$intNumStr] = ($finishUserId !== false && $finishUserId > 0);
+                    }
                 }
 
                 // Если пользователя с вызываемым номером нет в Б24, используем USER_ID (ответственный из CRM или fallback)
-                if ($finishIntNum && $finishUserId === null) {
+                if ($finishIntNum && ($finishUserId === false || $finishUserId === null || $finishUserId <= 0)) {
                     // Пробуем взять ответственного из CRM (проверяем, что значение валидное и > 0)
                     if ($linkedid && isset($globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'])) {
                         $crmResponsibleId = $globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'];
@@ -2599,7 +2615,7 @@ $pamiClient->registerEventListener(
                         }
                     }
                     // Если нет ответственного из CRM, используем fallback
-                    if ($finishUserId === null || $finishUserId <= 0) {
+                    if ($finishUserId === false || $finishUserId === null || $finishUserId <= 0) {
                         $finishUserId = $helper->getFallbackResponsibleUserId();
                         if ($finishUserId !== null && $finishUserId > 0) {
                             $helper->writeToLog(array(
@@ -2625,8 +2641,15 @@ $pamiClient->registerEventListener(
                     'crmResponsibleUserId' => $linkedid ? ($globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'] ?? 'not set') : 'no linkedid',
                 ), 'Call finish - determining finish method');
 
+                // Определяем, существует ли пользователь в Б24 по intNum
+                $userExistsInB24 = false;
+                if ($finishIntNum) {
+                    $intNumStr = (string)$finishIntNum;
+                    $userExistsInB24 = $globalsObj->userExistsByIntNum[$intNumStr] ?? false;
+                }
+
                 // Если есть finishUserId (> 0), завершаем по USER_ID (не используя USER_PHONE_INNER)
-                if ($finishUserId !== null && $finishUserId > 0) {
+                if ($finishUserId !== null && $finishUserId !== false && $finishUserId > 0) {
                     $finishResult = $helper->finishCall($call_id, null, $CallDuration, $statusCode, $finishUserId);
                     $helper->writeToLog(array(
                         'finishIntNum' => $finishIntNum,
@@ -2638,8 +2661,8 @@ $pamiClient->registerEventListener(
                         'method' => 'USER_ID',
                     ), 'Call finished after batch hide');
                     echo "call finished immediately in B24, status: $statusCode\n";
-                } elseif ($finishIntNum) {
-                    // Если finishUserId нет или он невалидный, но есть finishIntNum, используем старое поведение (USER_PHONE_INNER)
+                } elseif ($finishIntNum && $userExistsInB24) {
+                    // Пользователь ЕСТЬ в Б24, но finishUserId не определен - используем USER_PHONE_INNER (старое поведение)
                     $finishResult = $helper->finishCall($call_id, $finishIntNum, $CallDuration, $statusCode, null);
                     $helper->writeToLog(array(
                         'finishIntNum' => $finishIntNum,
@@ -2649,9 +2672,19 @@ $pamiClient->registerEventListener(
                         'duration' => $CallDuration,
                         'batchTargets' => $batchHide['targets'],
                         'method' => 'USER_PHONE_INNER',
-                        'reason' => $finishUserId === null ? 'finishUserId is null' : ($finishUserId <= 0 ? 'finishUserId <= 0' : 'unknown'),
+                        'reason' => 'User exists in B24 but finishUserId not determined',
                     ), 'Call finished after batch hide');
                     echo "call finished immediately in B24, status: $statusCode\n";
+                } elseif ($finishIntNum && !$userExistsInB24) {
+                    // Пользователя НЕТ в Б24, но finishUserId тоже нет - это ошибка, логируем
+                    $helper->writeToLog(array(
+                        'call_id' => $call_id,
+                        'finishIntNum' => $finishIntNum,
+                        'finishUserId' => $finishUserId,
+                        'statusCode' => $statusCode,
+                        'duration' => $CallDuration,
+                        'reason' => 'User not found in B24 and no finishUserId determined (should have been set from CRM or fallback)',
+                    ), 'Call finish ERROR: user not found and no USER_ID');
                 } else {
                     $helper->writeToLog(array(
                         'call_id' => $call_id,
@@ -2662,6 +2695,37 @@ $pamiClient->registerEventListener(
                 }
 
                 if ($linkedid) {
+                    // Собираем все intNum, использованные в этом звонке, для очистки кеша userExistsByIntNum
+                    $intNumsToClear = array();
+                    if ($finishIntNum) {
+                        $intNumsToClear[] = (string)$finishIntNum;
+                    }
+                    if ($CallIntNum) {
+                        $intNumsToClear[] = (string)$CallIntNum;
+                    }
+                    if (isset($globalsObj->ringOrder[$linkedid]) && is_array($globalsObj->ringOrder[$linkedid])) {
+                        foreach ($globalsObj->ringOrder[$linkedid] as $intNum) {
+                            $intNumsToClear[] = (string)$intNum;
+                        }
+                    }
+                    if (isset($globalsObj->ringingIntNums[$linkedid]) && is_array($globalsObj->ringingIntNums[$linkedid])) {
+                        foreach (array_keys($globalsObj->ringingIntNums[$linkedid]) as $intNum) {
+                            $intNumsToClear[] = (string)$intNum;
+                        }
+                    }
+                    if (isset($globalsObj->callShownCards[$linkedid]) && is_array($globalsObj->callShownCards[$linkedid])) {
+                        foreach (array_keys($globalsObj->callShownCards[$linkedid]) as $intNum) {
+                            $intNumsToClear[] = (string)$intNum;
+                        }
+                    }
+                    // Очищаем кеш userExistsByIntNum для всех использованных intNum
+                    $intNumsToClear = array_unique($intNumsToClear);
+                    foreach ($intNumsToClear as $intNumToClear) {
+                        if (isset($globalsObj->userExistsByIntNum[$intNumToClear])) {
+                            unset($globalsObj->userExistsByIntNum[$intNumToClear]);
+                        }
+                    }
+                    
                     unset($globalsObj->callShownCards[$linkedid]);
                     unset($globalsObj->ringingIntNums[$linkedid]);
                     if (isset($globalsObj->ringOrder[$linkedid])) {
