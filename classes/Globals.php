@@ -17,7 +17,8 @@ class Globals {
     //Детали CRM объекта, возвращённого при регистрации звонка
     public $callCrmData = array(); // [linkedid => ['entity_type'=>..., 'entity_id'=>..., 'created'=>bool]]
     //Список внутренних номеров, у которых показана карточка для звонка
-    public $callShownCards = array(); // [linkedid => ['100'=>true]]
+    // структура: [linkedid => [intNum => ['user_id'=>123,'int_num'=>'100','shown'=>true,'shown_at'=>ts]]]
+    public $callShownCards = array();
     //Список внутренних номеров, где в данный момент звонит телефон
     public $ringingIntNums = array(); // [linkedid => ['100' => ['user_id'=>123, 'shown'=>bool, 'state'=>'RING']]]
     //Порядок появления внутренних номеров в состоянии RING

@@ -382,9 +382,16 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
 
     $ringData = $globalsObj->ringingIntNums[$linkedid][$intNum] ?? array();
     $userId = $ringData['user_id'] ?? $helper->getUSER_IDByIntNum($intNum);
+    $intKey = (string)$intNum;
     if (!$userId) {
+        $globalsObj->userExistsByIntNum[$intKey] = false;
+        $helper->writeToLog(array(
+            'linkedid' => $linkedid,
+            'intNum' => $intNum,
+        ), 'show input call skipped: user not found');
         return;
     }
+    $globalsObj->userExistsByIntNum[$intKey] = true;
 
     if (callme_is_card_marked_shown($linkedid, $intNum, $globalsObj)) {
         return;
@@ -411,6 +418,7 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
             'int_num' => (string)$intNum,
             'shown' => true,
             'shown_at' => time(),
+            'updated_at' => time(),
         );
         if (!isset($globalsObj->ringingIntNums[$linkedid])) {
             $globalsObj->ringingIntNums[$linkedid] = array();
@@ -503,7 +511,23 @@ function callme_collect_shown_card_targets($linkedid, HelperFuncs $helper, Globa
         return $targets;
     }
     if (empty($globalsObj->callShownCards[$linkedid]) || !is_array($globalsObj->callShownCards[$linkedid])) {
-        return $targets;
+        if (!empty($globalsObj->ringingIntNums[$linkedid])) {
+            foreach ($globalsObj->ringingIntNums[$linkedid] as $fallbackInt => $ringData) {
+                if (empty($ringData['shown'])) {
+                    continue;
+                }
+                $globalsObj->callShownCards[$linkedid][$fallbackInt] = array(
+                    'user_id' => isset($ringData['user_id']) ? (int)$ringData['user_id'] : null,
+                    'int_num' => (string)$fallbackInt,
+                    'shown' => true,
+                    'shown_at' => $ringData['timestamp'] ?? time(),
+                    'updated_at' => time(),
+                );
+            }
+        }
+        if (empty($globalsObj->callShownCards[$linkedid])) {
+            return $targets;
+        }
     }
 
     foreach ($globalsObj->callShownCards[$linkedid] as $intNum => $cardInfo) {
@@ -523,9 +547,19 @@ function callme_collect_shown_card_targets($linkedid, HelperFuncs $helper, Globa
             $userId = (int)$globalsObj->ringingIntNums[$linkedid][$intNum]['user_id'];
         }
         if (!$userId) {
+            if (array_key_exists($intNumStr, $globalsObj->userExistsByIntNum) && $globalsObj->userExistsByIntNum[$intNumStr] === false) {
+                continue;
+            }
             $userId = (int)$helper->getUSER_IDByIntNum($intNumStr);
+            $globalsObj->userExistsByIntNum[$intNumStr] = $userId > 0;
+        } else {
+            $globalsObj->userExistsByIntNum[$intNumStr] = true;
         }
         if ($userId <= 0) {
+            $helper->writeToLog(array(
+                'linkedid' => $linkedid,
+                'intNum' => $intNumStr,
+            ), 'hide cards skipped: user not found');
             continue;
         }
 
@@ -560,6 +594,13 @@ function callme_hide_cards_batch($linkedid, $call_id, HelperFuncs $helper, Globa
 {
     $targets = callme_collect_shown_card_targets($linkedid, $helper, $globalsObj, $excludeIntNum);
     if (empty($targets) || !$call_id) {
+        if ($call_id) {
+            $helper->writeToLog(array(
+                'linkedid' => $linkedid,
+                'call_id' => $call_id,
+                'exclude' => $excludeIntNum,
+            ), 'Batch hide skipped: no targets');
+        }
         return array('result' => false, 'targets' => array());
     }
 
@@ -1518,6 +1559,7 @@ function callme_handle_dial_end_common(
                     'int_num' => (string)$currentIntNum,
                     'shown' => true,
                     'shown_at' => time(),
+            'updated_at' => time(),
                 );
             }
             if ($linkedid && isset($globalsObj->callCrmData[$linkedid])) {

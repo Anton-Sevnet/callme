@@ -962,7 +962,12 @@ class HelperFuncs {
             $payload['USER_PHONE_INNER'] = array_values(array_unique($userPhones));
         }
 
-        return $this->getBitrixApi($payload, 'telephony.externalcall.hide');
+        $result = $this->getBitrixApi($payload, 'telephony.externalcall.hide');
+        $this->writeToLog(array(
+            'payload' => $payload,
+            'result' => $result,
+        ), 'hide input call batch');
+        return $result;
     }
 
     public function crmStatusList(){
