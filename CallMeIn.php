@@ -872,6 +872,7 @@ $pamiClient->registerEventListener(
  */
 function callme_handle_user_event_ringing_start(EventMessage $event, HelperFuncs $helper, Globals $globalsObj)
 {
+    $helper->writeToLog($event->getRawContent(), 'AMI UserEvent raw: CallMeRingingStart');
     $linkedid = (string) ($event->getKey('Linkedid') ?? $event->getKey('LinkedID') ?? '');
     $linkedid = trim($linkedid);
     if ($linkedid === '') {
