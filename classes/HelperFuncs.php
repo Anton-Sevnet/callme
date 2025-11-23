@@ -422,11 +422,109 @@ class HelperFuncs {
 	}
 
     /**
-     * Получить fallback USER_ID для назначения ответственного
+     * Проверить существование пользователя в Б24 через user.get
      *
+     * @param int $userId
+     * @return bool
+     */
+    public function checkUserExists($userId){
+        if (empty($userId) || !is_numeric($userId)) {
+            return false;
+        }
+        $result = $this->getBitrixApi(array("ID" => (int)$userId), 'user.get');
+        if ($result && isset($result['result']) && is_array($result['result']) && !empty($result['result'])) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Проверить, есть ли extension в структуре extentions (поддерживает как старую плоскую, так и новую вложенную структуру)
+     *
+     * @param string $extension
+     * @return bool
+     */
+    public function isExtensionInExtentions($extension){
+        $extentions = $this->getConfig('extentions');
+        if (!is_array($extentions)) {
+            return false;
+        }
+        
+        // Проверяем, это новая структура (по странам) или старая (плоский массив)
+        $isNestedStructure = false;
+        foreach ($extentions as $key => $value) {
+            if (is_array($value) && isset($value['extentions']) && is_array($value['extentions'])) {
+                $isNestedStructure = true;
+                break;
+            }
+        }
+        
+        if ($isNestedStructure) {
+            // Новая структура: ищем по странам
+            foreach ($extentions as $countryCode => $countryData) {
+                if (!is_array($countryData) || !isset($countryData['extentions']) || !is_array($countryData['extentions'])) {
+                    continue;
+                }
+                if (in_array($extension, $countryData['extentions'], true)) {
+                    return true;
+                }
+            }
+        } else {
+            // Старая структура: плоский массив
+            if (in_array($extension, $extentions, true)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Получить fallback USER_ID для назначения ответственного по номеру extension
+     * Ищет в структуре extentions по странам, проверяет существование пользователя через user.get
+     * Если пользователь не найден, возвращает глобальный fallback_responsible_user_id
+     *
+     * @param string|null $extension Номер extension (например, '73422482347')
      * @return int|null
      */
-    public function getFallbackResponsibleUserId(){
+    public function getFallbackResponsibleUserId($extension = null){
+        // Если передан extension, ищем в структуре extentions
+        if ($extension !== null && $extension !== '') {
+            $extentions = $this->getConfig('extentions');
+            if (is_array($extentions)) {
+                // Проходим по структуре стран (ru, md и т.д.)
+                foreach ($extentions as $countryCode => $countryData) {
+                    if (!is_array($countryData) || !isset($countryData['extentions']) || !is_array($countryData['extentions'])) {
+                        continue;
+                    }
+                    // Проверяем, есть ли этот extension в массиве номеров страны
+                    if (in_array($extension, $countryData['extentions'], true)) {
+                        // Нашли страну для этого номера
+                        if (isset($countryData['fallback_responsible_user_id']) && is_numeric($countryData['fallback_responsible_user_id'])) {
+                            $userId = (int)$countryData['fallback_responsible_user_id'];
+                            if ($userId > 0) {
+                                // Проверяем существование пользователя через user.get
+                                if ($this->checkUserExists($userId)) {
+                                    return $userId;
+                                } else {
+                                    // Пользователь не найден, логируем и используем глобальный fallback
+                                    $this->writeToLog(array(
+                                        'extension' => $extension,
+                                        'country' => $countryCode,
+                                        'fallback_user_id' => $userId,
+                                        'note' => 'User not found in B24, will use global fallback'
+                                    ), 'Fallback user check failed');
+                                }
+                            }
+                        }
+                        // Если дошли сюда, значит для этой страны нет валидного fallback, используем глобальный
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Используем глобальный fallback_responsible_user_id
         $value = $this->getConfig('fallback_responsible_user_id');
         if (is_numeric($value)) {
             $value = (int)$value;

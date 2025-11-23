@@ -1713,7 +1713,8 @@ $pamiClient->registerEventListener(
                 // выставим CallerID 
                 $callami->SetVar("CALLERID(name)", $CallMeCallerIDName, $CallChannel);
                 
-                $fallbackUserId = $helper->getFallbackResponsibleUserId();
+                // Получаем fallback пользователя с учетом extension (проверяет структуру по странам)
+                $fallbackUserId = $helper->getFallbackResponsibleUserId($exten);
                 $fallbackUserInt = $fallbackUserId ? $helper->getIntNumByUSER_ID($fallbackUserId) : null;
 
                 $selectedIntNum = null;
@@ -1857,7 +1858,7 @@ $pamiClient->registerEventListener(
                 echo "\n-------------------------------------------------------------------\n\r";
                 echo "\n\r";
 
-            }, function (EventMessage $event) use ($globalsObj){
+            }, function (EventMessage $event) use ($helper, $globalsObj){
                     //для фильтра берем только указанные внешние номера
 
                     return
@@ -1865,8 +1866,8 @@ $pamiClient->registerEventListener(
                         && ($event->getExtension() != "s")
                         && (strpos($event->getContext(), "trunk") != -1)
                         && ($event->getName() == "Newchannel")
-                        //проверяем на вхождение в массив
-        && in_array($event->getExtension(), $globalsObj->extentions)
+                        //проверяем на вхождение в массив (поддерживает как старую плоскую, так и новую вложенную структуру)
+                        && $helper->isExtensionInExtentions($event->getExtension())
                         ;
                 }
         );
