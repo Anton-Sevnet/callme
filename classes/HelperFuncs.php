@@ -384,16 +384,43 @@ class HelperFuncs {
 	 * We need CALL_ID and CRM data
 	 */
 	public function runInputCall($exten, $callerid, $line, $crm_source=null, $userId = null){
-	    if (substr($callerid,0,1) == "9" and !(strlen($callerid) == 10)){
-            $callerid = substr($callerid, 1);
+	    // Получаем международный префикс по extension (line)
+        $internationalPrefix = $this->getInternationalPrefixByExtension($line);
+        
+        // Обработка номера в зависимости от префикса
+        $phoneNumber = '';
+        if ($internationalPrefix === '7') {
+            // Логика для российских номеров (как было)
+            if (substr($callerid,0,1) == "9" and !(strlen($callerid) == 10)){
+                $callerid = substr($callerid, 1);
+            }
+            if (strlen($callerid) == 7){
+                $callerid = "8342".$callerid;
+            }
+            $phoneNumber = "+7".substr($callerid, -10);
+        } elseif ($internationalPrefix !== null && $internationalPrefix !== '') {
+            // Для других стран (Молдова и т.д.)
+            // Убираем ведущий 0 если есть
+            $normalizedCallerid = ltrim($callerid, '0');
+            if ($normalizedCallerid === '') {
+                $normalizedCallerid = $callerid; // Если номер состоял только из нулей
+            }
+            $phoneNumber = "+".$internationalPrefix.$normalizedCallerid;
+        } else {
+            // Если префикс не найден, используем старую логику (по умолчанию +7)
+            if (substr($callerid,0,1) == "9" and !(strlen($callerid) == 10)){
+                $callerid = substr($callerid, 1);
+            }
+            if (strlen($callerid) == 7){
+                $callerid = "8342".$callerid;
+            }
+            $phoneNumber = "+7".substr($callerid, -10);
         }
-	    if (strlen($callerid) == 7){
-            $callerid = "8342".$callerid;
-        }
+        
         $data = array(
             'USER_PHONE_INNER' => $exten,
             //'USER_ID' => $argv[1],
-            'PHONE_NUMBER' => "+7".substr($callerid, -10),
+            'PHONE_NUMBER' => $phoneNumber,
             'LINE_NUMBER' => $line,
             'TYPE' => 2,
             'CRM_CREATE' => 1,
@@ -477,6 +504,39 @@ class HelperFuncs {
         }
         
         return false;
+    }
+
+    /**
+     * Получить международный префикс по extension из конфига
+     *
+     * @param string|null $extension Номер extension (например, '800018')
+     * @return string|null Международный префикс (например, '373' или '7') или null если не найден
+     */
+    public function getInternationalPrefixByExtension($extension = null){
+        if ($extension === null || $extension === '') {
+            return null;
+        }
+        $extentions = $this->getConfig('extentions');
+        if (!is_array($extentions)) {
+            return null;
+        }
+        
+        // Проходим по структуре стран (ru, md и т.д.)
+        foreach ($extentions as $countryCode => $countryData) {
+            if (!is_array($countryData) || !isset($countryData['extentions']) || !is_array($countryData['extentions'])) {
+                continue;
+            }
+            // Проверяем, есть ли этот extension в массиве номеров страны
+            if (in_array($extension, $countryData['extentions'], true)) {
+                // Нашли страну для этого номера
+                if (isset($countryData['internationl_prefix']) && $countryData['internationl_prefix'] !== '') {
+                    return (string)$countryData['internationl_prefix'];
+                }
+                break;
+            }
+        }
+        
+        return null;
     }
 
     /**
