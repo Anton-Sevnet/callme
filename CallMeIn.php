@@ -1272,6 +1272,8 @@ function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs 
 function callme_extract_internal_number(...$sources)
 {
     $patterns = array(
+        '/IAX2\/[^\/-]*[-\/](\d+)(?=[\-\/]|$)/',  // IAX2/posttun-6004, IAX2/trunk-123
+        '/posttun\/(\d+)(?=[\-\/]|$)/',            // posttun/117, posttun/118
         '/Local\/(\d+)(?=@)/',
         '/SIP\/(\d+)(?=[\-\/]|$)/',
         '/PJSIP\/(\d+)(?=[\-\/@]|$)/',
