@@ -2787,7 +2787,8 @@ $pamiClient->registerEventListener(
                     $finalIntNum = $finishIntNum ?: ($crmInfo['answer_int_num'] ?? $CallIntNum);
                     $finalUserId = $finalIntNum ? $helper->getUSER_IDByIntNum($finalIntNum) : null;
                     if (!$finalUserId) {
-                        $finalUserId = $helper->getFallbackResponsibleUserId();
+                        // Используем изначального ответственного (fallback для этого DID), если он был определен при регистрации
+                        $finalUserId = $crmInfo['initial_responsible_user_id'] ?? $helper->getFallbackResponsibleUserId();
                     }
 
                     if ($crmEntityType && $crmEntityId && $finalUserId) {
