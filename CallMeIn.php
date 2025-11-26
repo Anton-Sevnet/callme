@@ -2609,6 +2609,22 @@ $pamiClient->registerEventListener(
 
                 $finishIntNum = $CallIntNum;
                 $finishUserId = null;
+                
+                // Если вызов неотвеченный (STATUS_CODE = 304), используем USER_ID из регистрации
+                // вместо того, кто последний держал трубку
+                if ($statusCode == 304 && $linkedid && isset($globalsObj->callCrmData[$linkedid]['initial_responsible_user_id'])) {
+                    $initialUserId = $globalsObj->callCrmData[$linkedid]['initial_responsible_user_id'];
+                    if (!empty($initialUserId) && is_numeric($initialUserId) && (int)$initialUserId > 0) {
+                        $finishUserId = (int)$initialUserId;
+                        $helper->writeToLog(array(
+                            'statusCode' => $statusCode,
+                            'initial_responsible_user_id' => $initialUserId,
+                            'finishUserId' => $finishUserId,
+                            'linkedid' => $linkedid,
+                            'reason' => 'Unanswered call - using initial USER_ID from registration'
+                        ), 'Call finish - using initial USER_ID for unanswered call');
+                    }
+                }
                 if (!$finishIntNum && isset($globalsObj->transferHistory[$callLinkedid]['currentIntNum'])) {
                     $finishIntNum = (string)$globalsObj->transferHistory[$callLinkedid]['currentIntNum'];
                 }
@@ -2619,12 +2635,14 @@ $pamiClient->registerEventListener(
                     $finishIntNum = $primaryTarget['int_num'] ?? $finishIntNum;
                     $primaryUserId = $primaryTarget['user_id'] ?? null;
                     // Проверяем, что user_id валидный (> 0)
-                    if ($primaryUserId !== null && (int)$primaryUserId > 0) {
+                    // Для неотвеченных вызовов (304) не перезаписываем finishUserId, если он уже установлен из initial_responsible_user_id
+                    if ($primaryUserId !== null && (int)$primaryUserId > 0 && ($statusCode != 304 || $finishUserId === null)) {
                         $finishUserId = (int)$primaryUserId;
                     }
                 }
                 // Проверяем существование пользователя по intNum (один раз, с кешированием)
-                if ($finishIntNum && $finishUserId === null) {
+                // Для неотвеченных вызовов (304) не перезаписываем finishUserId, если он уже установлен из initial_responsible_user_id
+                if ($finishIntNum && $finishUserId === null && ($statusCode != 304 || !isset($globalsObj->callCrmData[$linkedid]['initial_responsible_user_id']))) {
                     // Проверяем кеш - уже проверяли этого пользователя?
                     $intNumStr = (string)$finishIntNum;
                     if (isset($globalsObj->userExistsByIntNum[$intNumStr])) {
@@ -2644,7 +2662,8 @@ $pamiClient->registerEventListener(
                 }
 
                 // Если пользователя с вызываемым номером нет в Б24, используем USER_ID (ответственный из CRM или fallback)
-                if ($finishIntNum && ($finishUserId === false || $finishUserId === null || $finishUserId <= 0)) {
+                // Для неотвеченных вызовов (304) не перезаписываем finishUserId, если он уже установлен из initial_responsible_user_id
+                if ($finishIntNum && ($finishUserId === false || $finishUserId === null || $finishUserId <= 0) && ($statusCode != 304 || !isset($globalsObj->callCrmData[$linkedid]['initial_responsible_user_id']))) {
                     // Пробуем взять ответственного из CRM (проверяем, что значение валидное и > 0)
                     if ($linkedid && isset($globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'])) {
                         $crmResponsibleId = $globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'];
