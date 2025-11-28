@@ -235,12 +235,61 @@ function updateDynamicEntity(int $entityTypeId, int $entityId, int $userId): arr
         }
         
         if ($isOpened) {
+            // Даже если OPENED уже 'Y', все равно добавляем наблюдателя если нужно
+            $currentObservers = ObserverManager::getEntityObserverIDs($entityTypeId, $entityId);
+            if (!is_array($currentObservers)) {
+                $currentObservers = array();
+            }
+            
+            // Проверяем, нужно ли добавить наблюдателя
+            if (!in_array($userId, $currentObservers)) {
+                $newObservers = array_unique(
+                    array_merge($currentObservers, array($userId)),
+                    SORT_NUMERIC
+                );
+                
+                if ($factory->isObserversEnabled()) {
+                    $item->setObservers($newObservers);
+                }
+                
+                $operation = $factory->getUpdateOperation($item);
+                if ($operation !== null) {
+                    $result = $operation->launch();
+                    if ($result->isSuccess()) {
+                        // Записываем в историю: добавлен наблюдатель
+                        $userName = '';
+                        try {
+                            $user = \CUser::GetByID($userId)->Fetch();
+                            if ($user) {
+                                $userName = trim($user['NAME'] . ' ' . $user['LAST_NAME']);
+                                if (empty($userName)) {
+                                    $userName = $user['LOGIN'] ?? "ID: {$userId}";
+                                }
+                            }
+                        } catch (\Throwable $e) {
+                            $userName = "ID: {$userId}";
+                        }
+                        
+                        addHistoryRecord(
+                            $entityTypeId,
+                            $entityId,
+                            'OBSERVER_IDS',
+                            "Добавлен наблюдатель: {$userName}",
+                            1
+                        );
+                    }
+                }
+            }
+            
             return array(
                 'success' => true,
                 'entity_type_id' => $entityTypeId,
                 'entity_id' => $entityId,
                 'skipped' => true,
-                'reason' => 'OPENED уже установлен в Y'
+                'reason' => 'OPENED уже установлен в Y',
+                'opened_changed' => false,
+                'opened_was_n' => false,
+                'was_added' => !in_array($userId, $currentObservers ?? array())
             );
         }
 
@@ -250,8 +299,9 @@ function updateDynamicEntity(int $entityTypeId, int $entityId, int $userId): arr
             $currentObservers = array();
         }
 
-        // Получаем текущее значение OPENED до изменения (для истории)
-        $wasOpened = false;
+        // Сохраняем исходное значение OPENED (было ли оно 'N' или false)
+        $wasOpened = $isOpened;
+        $openedChanged = !$wasOpened; // Изменилось только если было 'N' и стало 'Y'
 
         // Объединяем с новым наблюдателем (merge)
         $newObservers = array_unique(
@@ -319,7 +369,9 @@ function updateDynamicEntity(int $entityTypeId, int $entityId, int $userId): arr
                 'entity_type_id' => $entityTypeId,
                 'entity_id' => $entityId,
                 'observers_count' => count($newObservers),
-                'was_added' => !in_array($userId, $currentObservers)
+                'was_added' => !in_array($userId, $currentObservers),
+                'opened_changed' => $openedChanged,
+                'opened_was_n' => !$wasOpened
             );
         } else {
             $errors = $result->getErrorMessages();
@@ -384,13 +436,64 @@ function updateEntity(int $entityTypeId, int $entityId, int $userId): array
         $isOpened = true;
     }
     
+    // Сохраняем исходное значение OPENED
+    $wasOpened = $isOpened;
+    $openedChanged = !$wasOpened; // Изменилось только если было 'N' и стало 'Y'
+    
     if ($isOpened) {
+        // Даже если OPENED уже 'Y', все равно добавляем наблюдателя если нужно
+        $currentObservers = ObserverManager::getEntityObserverIDs($entityTypeId, $entityId);
+        if (!is_array($currentObservers)) {
+            $currentObservers = array();
+        }
+        
+        // Проверяем, нужно ли добавить наблюдателя
+        if (!in_array($userId, $currentObservers)) {
+            $newObservers = array_unique(
+                array_merge($currentObservers, array($userId)),
+                SORT_NUMERIC
+            );
+            
+            $fields = array(
+                'OBSERVER_IDS' => $newObservers
+            );
+            
+            $result = $entity->Update($entityId, $fields, true, true, array('DISABLE_USER_FIELD_CHECK' => true));
+            
+            if ($result) {
+                // Записываем в историю: добавлен наблюдатель
+                $userName = '';
+                try {
+                    $user = \CUser::GetByID($userId)->Fetch();
+                    if ($user) {
+                        $userName = trim($user['NAME'] . ' ' . $user['LAST_NAME']);
+                        if (empty($userName)) {
+                            $userName = $user['LOGIN'] ?? "ID: {$userId}";
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    $userName = "ID: {$userId}";
+                }
+                
+                addHistoryRecord(
+                    $entityTypeId,
+                    $entityId,
+                    'OBSERVER_IDS',
+                    "Добавлен наблюдатель: {$userName}",
+                    1
+                );
+            }
+        }
+        
         return array(
             'success' => true,
             'entity_type_id' => $entityTypeId,
             'entity_id' => $entityId,
             'skipped' => true,
-            'reason' => 'OPENED уже установлен в Y'
+            'reason' => 'OPENED уже установлен в Y',
+            'opened_changed' => false,
+            'opened_was_n' => false,
+            'was_added' => !in_array($userId, $currentObservers ?? array())
         );
     }
 
@@ -458,7 +561,9 @@ function updateEntity(int $entityTypeId, int $entityId, int $userId): array
             'entity_type_id' => $entityTypeId,
             'entity_id' => $entityId,
             'observers_count' => count($newObservers),
-            'was_added' => !in_array($userId, $currentObservers)
+            'was_added' => !in_array($userId, $currentObservers),
+            'opened_changed' => $openedChanged,
+            'opened_was_n' => !$wasOpened
         );
     } else {
         $error = $entity->LAST_ERROR ?: 'Неизвестная ошибка обновления';

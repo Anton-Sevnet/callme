@@ -399,7 +399,7 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
 
     // Получаем номер телефона из сохраненных данных
     $phoneNumber = $globalsObj->phoneByCallId[$call_id] ?? null;
-    $result = $helper->showInputCall($intNum, $call_id, $phoneNumber, $globalsObj);
+    $result = $helper->showInputCall($intNum, $call_id, $phoneNumber, $globalsObj, $linkedid);
     $helper->writeToLog(array(
         'linkedid' => $linkedid,
         'intNum' => $intNum,
@@ -2168,7 +2168,7 @@ $pamiClient->registerEventListener(
                 } else {
                     // Получаем номер телефона из сохраненных данных
                     $phoneNumber = $globalsObj->phoneByCallId[$callId] ?? null;
-                    $helper->showInputCall($intNum, $callId, $phoneNumber, $globalsObj);
+                    $helper->showInputCall($intNum, $callId, $phoneNumber, $globalsObj, $linkedid);
                     $helper->writeToLog(array(
                         'intNum' => $intNum,
                         'call_id' => $callId,
@@ -2604,6 +2604,21 @@ $pamiClient->registerEventListener(
                     'Disposition'=>$CallDisposition), true);
                 
                 $statusCode = $helper->getStatusCodeFromDisposition($CallDisposition);
+
+                // Если звонок завершен со статусом "Пропущен" (NO ANSWER, код 304), откатываем изменения наблюдателей
+                if ($statusCode == 304 && $linkedid) {
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'statusCode' => $statusCode,
+                        'call_id' => $call_id
+                    ), 'HangupEvent: NO ANSWER detected, rolling back observer changes');
+                    
+                    $rollbackResult = $helper->rollbackObserverChanges($linkedid, $globalsObj);
+                    $helper->writeToLog(array(
+                        'linkedid' => $linkedid,
+                        'rollback_result' => $rollbackResult
+                    ), 'HangupEvent: observer changes rollback completed');
+                }
 
                 $batchHide = array('result' => false, 'targets' => array());
                 if ($linkedid) {

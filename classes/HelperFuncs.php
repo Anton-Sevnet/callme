@@ -1083,10 +1083,11 @@ class HelperFuncs {
 	 * @param int $call_id 
 	 * @param string|null $phoneNumber Номер телефона звонящего (для поиска CRM сущностей)
 	 * @param object|null $globalsObj Объект Globals для доступа к сохраненным CRM сущностям
+	 * @param string|null $linkedid LinkedID звонка для сохранения информации об изменениях
 	 *
 	 * @return bool 
 	 */
-	public function showInputCall($intNum, $call_id, $phoneNumber = null, $globalsObj = null){
+	public function showInputCall($intNum, $call_id, $phoneNumber = null, $globalsObj = null, $linkedid = null){
 		$user_id = $this->getUSER_IDByIntNum($intNum);
 		if (!$user_id){
 			return false;
@@ -1122,7 +1123,7 @@ class HelperFuncs {
 					'entities' => $entitiesToAddObserver
 				), 'showInputCall: adding observer to CRM entities');
 				
-				$observerResult = $this->callAddObserverToEntities($entitiesToAddObserver, $user_id);
+				$observerResult = $this->callAddObserverToEntities($entitiesToAddObserver, $user_id, $linkedid, $globalsObj);
 				
 				if ($observerResult === false) {
 					$this->writeToLog(array(
@@ -1248,10 +1249,12 @@ class HelperFuncs {
 	 *
 	 * @param array $entities Массив сущностей в формате [['ENTITY_TYPE_ID'=>1, 'ENTITY_ID'=>123], ...]
 	 * @param int $userId ID пользователя, которого нужно добавить в наблюдатели
+	 * @param string|null $linkedid LinkedID звонка для сохранения информации об изменениях (для возможного отката)
+	 * @param object|null $globalsObj Объект Globals для сохранения информации об изменениях
 	 *
 	 * @return array|false Результат выполнения или false при ошибке
 	 */
-	public function callAddObserverToEntities(array $entities, $userId){
+	public function callAddObserverToEntities(array $entities, $userId, $linkedid = null, $globalsObj = null){
 		if (empty($entities) || empty($userId) || $userId <= 0) {
 			$this->writeToLog(array(
 				'entities' => $entities,
@@ -1339,7 +1342,234 @@ class HelperFuncs {
 			'result' => $decodedResult
 		), 'callAddObserverToEntities: success');
 
+		// Сохраняем информацию об изменениях для возможного отката
+		if ($linkedid !== null && $globalsObj !== null && isset($decodedResult['success']) && $decodedResult['success'] && isset($decodedResult['results'])) {
+			$changes = array(
+				'user_id' => (int)$userId,
+				'entities' => array()
+			);
+			
+			foreach ($decodedResult['results'] as $result) {
+				if (isset($result['success']) && $result['success'] && isset($result['entity_type_id']) && isset($result['entity_id'])) {
+					$entityChange = array(
+						'entity_type_id' => (int)$result['entity_type_id'],
+						'entity_id' => (int)$result['entity_id'],
+						'was_added' => isset($result['was_added']) ? (bool)$result['was_added'] : false,
+						'opened_changed' => isset($result['opened_changed']) ? (bool)$result['opened_changed'] : false,
+						'opened_was_n' => isset($result['opened_was_n']) ? (bool)$result['opened_was_n'] : false
+					);
+					
+					// Сохраняем только если пользователь был добавлен или OPENED был изменен
+					if ($entityChange['was_added'] || $entityChange['opened_changed']) {
+						$changes['entities'][] = $entityChange;
+					}
+				}
+			}
+			
+			// Сохраняем изменения только если есть что откатывать
+			if (!empty($changes['entities'])) {
+				if (!isset($globalsObj->callCrmData[$linkedid])) {
+					$globalsObj->callCrmData[$linkedid] = array();
+				}
+				if (!isset($globalsObj->callCrmData[$linkedid]['observer_changes'])) {
+					$globalsObj->callCrmData[$linkedid]['observer_changes'] = array();
+				}
+				$globalsObj->callCrmData[$linkedid]['observer_changes'][] = $changes;
+				
+				$this->writeToLog(array(
+					'linkedid' => $linkedid,
+					'changes' => $changes
+				), 'callAddObserverToEntities: saved changes for rollback');
+			}
+		}
+
 		return $decodedResult;
+	}
+
+	/**
+	 * Вызов скрипта remove_observer_from_entities.php для отката изменений (удаление наблюдателей и восстановление OPENED)
+	 *
+	 * @param array $entities Массив сущностей в формате [['ENTITY_TYPE_ID'=>1, 'ENTITY_ID'=>123, 'USER_ID'=>42, 'RESTORE_OPENED'=>true], ...]
+	 *
+	 * @return array|false Результат выполнения или false при ошибке
+	 */
+	public function callRemoveObserverFromEntities(array $entities){
+		if (empty($entities)) {
+			$this->writeToLog(array(
+				'entities' => $entities,
+				'reason' => 'Empty entities array'
+			), 'callRemoveObserverFromEntities: skipped');
+			return false;
+		}
+
+		// Формируем URL скрипта
+		$scriptUrl = $this->getConfig('bitrixApiUrl');
+		if (!$scriptUrl) {
+			$this->writeToLog('bitrixApiUrl not configured', 'callRemoveObserverFromEntities ERROR');
+			return false;
+		}
+
+		// Извлекаем базовый URL (без /rest/...)
+		$parsedUrl = parse_url($scriptUrl);
+		$baseUrl = $parsedUrl['scheme'] . '://' . $parsedUrl['host'];
+		if (isset($parsedUrl['port'])) {
+			$baseUrl .= ':' . $parsedUrl['port'];
+		}
+		
+		// Формируем полный путь к скрипту
+		$scriptUrl = $baseUrl . '/local/cust_app/callme/php_applets/remove_observer_from_entities.php';
+
+		// Подготавливаем payload
+		$payload = array(
+			'entities' => $entities
+		);
+
+		$this->writeToLog(array(
+			'url' => $scriptUrl,
+			'payload' => $payload
+		), 'callRemoveObserverFromEntities: calling script');
+
+		// Выполняем HTTP запрос
+		$curl = curl_init();
+		curl_setopt_array($curl, array(
+			CURLOPT_SSL_VERIFYPEER => 0,
+			CURLOPT_POST => 1,
+			CURLOPT_HEADER => 0,
+			CURLOPT_RETURNTRANSFER => 1,
+			CURLOPT_URL => $scriptUrl,
+			CURLOPT_POSTFIELDS => json_encode($payload),
+			CURLOPT_HTTPHEADER => array(
+				'Content-Type: application/json; charset=utf-8'
+			),
+			CURLOPT_TIMEOUT => 30
+		));
+
+		$result = curl_exec($curl);
+		$httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+		$curlError = curl_error($curl);
+		curl_close($curl);
+
+		if ($curlError) {
+			$this->writeToLog(array(
+				'error' => $curlError,
+				'http_code' => $httpCode
+			), 'callRemoveObserverFromEntities: CURL error');
+			return false;
+		}
+
+		if ($httpCode !== 200) {
+			$this->writeToLog(array(
+				'http_code' => $httpCode,
+				'response' => $result
+			), 'callRemoveObserverFromEntities: HTTP error');
+			return false;
+		}
+
+		$decodedResult = json_decode($result, true);
+		if (json_last_error() !== JSON_ERROR_NONE) {
+			$this->writeToLog(array(
+				'response' => $result,
+				'json_error' => json_last_error_msg()
+			), 'callRemoveObserverFromEntities: JSON decode error');
+			return false;
+		}
+
+		$this->writeToLog(array(
+			'result' => $decodedResult
+		), 'callRemoveObserverFromEntities: success');
+
+		return $decodedResult;
+	}
+
+	/**
+	 * Откатывает изменения наблюдателей для звонка (удаляет добавленных наблюдателей и восстанавливает OPENED)
+	 *
+	 * @param string $linkedid LinkedID звонка
+	 * @param object $globalsObj Объект Globals
+	 *
+	 * @return bool Успешно ли выполнен откат
+	 */
+	public function rollbackObserverChanges($linkedid, $globalsObj){
+		if (empty($linkedid) || !isset($globalsObj->callCrmData[$linkedid]['observer_changes'])) {
+			$this->writeToLog(array(
+				'linkedid' => $linkedid,
+				'has_changes' => isset($globalsObj->callCrmData[$linkedid]['observer_changes'])
+			), 'rollbackObserverChanges: no changes to rollback');
+			return false;
+		}
+
+		$observerChanges = $globalsObj->callCrmData[$linkedid]['observer_changes'];
+		if (empty($observerChanges) || !is_array($observerChanges)) {
+			return false;
+		}
+
+		$this->writeToLog(array(
+			'linkedid' => $linkedid,
+			'changes_count' => count($observerChanges)
+		), 'rollbackObserverChanges: starting rollback');
+
+		// Собираем все сущности для отката
+		$entitiesToRollback = array();
+		
+		foreach ($observerChanges as $change) {
+			if (!isset($change['user_id']) || !isset($change['entities']) || !is_array($change['entities'])) {
+				continue;
+			}
+			
+			$userId = (int)$change['user_id'];
+			
+			foreach ($change['entities'] as $entity) {
+				if (!isset($entity['entity_type_id']) || !isset($entity['entity_id'])) {
+					continue;
+				}
+				
+				// Определяем, нужно ли удалять пользователя и восстанавливать OPENED
+				$needRemoveObserver = isset($entity['was_added']) && $entity['was_added'];
+				$needRestoreOpened = isset($entity['opened_changed']) && $entity['opened_changed'] && isset($entity['opened_was_n']) && $entity['opened_was_n'];
+				
+				// Добавляем сущность для отката только если нужно что-то откатывать
+				if ($needRemoveObserver || $needRestoreOpened) {
+					$rollbackEntity = array(
+						'ENTITY_TYPE_ID' => (int)$entity['entity_type_id'],
+						'ENTITY_ID' => (int)$entity['entity_id'],
+						'USER_ID' => $needRemoveObserver ? $userId : 0, // Передаем USER_ID только если нужно удалить
+						'RESTORE_OPENED' => $needRestoreOpened
+					);
+					
+					$entitiesToRollback[] = $rollbackEntity;
+				}
+			}
+		}
+
+		if (empty($entitiesToRollback)) {
+			$this->writeToLog(array(
+				'linkedid' => $linkedid
+			), 'rollbackObserverChanges: no entities to rollback');
+			return false;
+		}
+
+		// Вызываем скрипт для отката
+		$result = $this->callRemoveObserverFromEntities($entitiesToRollback);
+		
+		if ($result !== false && isset($result['success']) && $result['success']) {
+			$this->writeToLog(array(
+				'linkedid' => $linkedid,
+				'entities_count' => count($entitiesToRollback),
+				'result' => $result
+			), 'rollbackObserverChanges: rollback successful');
+			
+			// Удаляем информацию об изменениях после успешного отката
+			unset($globalsObj->callCrmData[$linkedid]['observer_changes']);
+			
+			return true;
+		} else {
+			$this->writeToLog(array(
+				'linkedid' => $linkedid,
+				'entities_count' => count($entitiesToRollback),
+				'result' => $result
+			), 'rollbackObserverChanges: rollback failed');
+			return false;
+		}
 	}
 
     /**
