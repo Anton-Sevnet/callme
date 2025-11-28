@@ -252,6 +252,12 @@ class ClientImpl implements IClient
         // Read something.
         $this->lastReadBytes = 0;
         $readStartedAt = microtime(true);
+        
+        // Проверка на валидность socket перед чтением (PHP 8.2+)
+        if (!is_resource($this->socket) && !($this->socket instanceof \Socket)) {
+            throw new ClientException('Socket is not a valid resource');
+        }
+        
         $read = @fread($this->socket, 65535);
         if ($read === false || @feof($this->socket)) {
             throw new ClientException('Error reading');
@@ -343,14 +349,22 @@ class ClientImpl implements IClient
         foreach ($this->eventListeners as $data) {
             $listener = $data[0];
             $predicate = $data[1];
+            
+            // Защита от null listener (PHP 8.2+)
+            if ($listener === null) {
+                continue;
+            }
+            
             if (is_callable($predicate) && !call_user_func($predicate, $message)) {
                 continue;
             }
             if ($listener instanceof \Closure) {
                 $listener($message);
             } elseif (is_array($listener)) {
-                $listener[0]->{$listener[1]}($message);
-            } else {
+                if (isset($listener[0]) && isset($listener[1]) && is_object($listener[0]) && method_exists($listener[0], $listener[1])) {
+                    $listener[0]->{$listener[1]}($message);
+                }
+            } elseif (is_object($listener) && method_exists($listener, 'handle')) {
                 $listener->handle($message);
             }
         }

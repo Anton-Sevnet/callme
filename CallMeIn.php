@@ -2533,10 +2533,10 @@ $pamiClient->registerEventListener(
 //                }
 
 
-                $FullFname = $globalsObj->FullFnameUrls[$callLinkedid];
+                $FullFname = $globalsObj->FullFnameUrls[$callLinkedid] ?? null;
 //                $FullFname = "";
 //              Длинна разговора, пусть будет всегда не меньше 1
-                $CallDuration = $globalsObj->Durations[$callLinkedid];
+                $CallDuration = $globalsObj->Durations[$callLinkedid] ?? null;
                 if (!empty($globalsObj->Answers[$callLinkedid])) {
                     $CallDuration = time() - $globalsObj->Answers[$callLinkedid];
                 } elseif (!empty($globalsObj->transferHistory[$callLinkedid]['answer_timestamp'])) {
@@ -2837,11 +2837,11 @@ $pamiClient->registerEventListener(
                 $uploadCmd = sprintf(
                     'php %s/upload_recording_async.php %s %s %s %s %s > /dev/null 2>&1 &',
                     __DIR__,
-                    escapeshellarg($call_id),
-                    escapeshellarg($FullFname),
-                    escapeshellarg($CallIntNum),
-                    escapeshellarg($CallDuration),
-                    escapeshellarg($CallDisposition)
+                    escapeshellarg($call_id ?? ''),
+                    escapeshellarg($FullFname ?? ''),
+                    escapeshellarg($CallIntNum ?? ''),
+                    escapeshellarg($CallDuration ?? '0'),
+                    escapeshellarg($CallDisposition ?? '')
                 );
                 exec($uploadCmd);
                 
@@ -3241,10 +3241,10 @@ $pamiClient->registerEventListener(
                     $uploadCmd = sprintf(
                         'php %s/upload_recording_async.php %s %s %s %s %s > /dev/null 2>&1 &',
                         __DIR__,
-                        escapeshellarg($data['call_id']),
-                        escapeshellarg($data['record_url']),
-                        escapeshellarg($data['intNum']),
-                        escapeshellarg($duration),
+                        escapeshellarg($data['call_id'] ?? ''),
+                        escapeshellarg($data['record_url'] ?? ''),
+                        escapeshellarg($data['intNum'] ?? ''),
+                        escapeshellarg($duration ?? '0'),
                         escapeshellarg('ANSWERED')
                     );
                     exec($uploadCmd);
