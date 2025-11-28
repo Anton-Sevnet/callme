@@ -209,14 +209,26 @@ function updateDynamicEntity(int $entityTypeId, int $entityId, int $userId): arr
             );
         }
 
+        // Проверяем текущее значение OPENED - если уже 'Y', выходим без изменений
+        $currentOpened = $item->getOpened() ?? false;
+        if ($currentOpened === true || $currentOpened === 'Y') {
+            return array(
+                'success' => true,
+                'entity_type_id' => $entityTypeId,
+                'entity_id' => $entityId,
+                'skipped' => true,
+                'reason' => 'OPENED уже установлен в Y'
+            );
+        }
+
         // Получаем текущих наблюдателей
         $currentObservers = ObserverManager::getEntityObserverIDs($entityTypeId, $entityId);
         if (!is_array($currentObservers)) {
             $currentObservers = array();
         }
 
-        // Получаем текущее значение OPENED до изменения
-        $wasOpened = $item->getOpened() ?? false;
+        // Получаем текущее значение OPENED до изменения (для истории)
+        $wasOpened = false;
 
         // Объединяем с новым наблюдателем (merge)
         $newObservers = array_unique(
@@ -345,7 +357,7 @@ function updateEntity(int $entityTypeId, int $entityId, int $userId): array
     // Создаем экземпляр сущности без проверки прав
     $entity = new $entityClass(false);
 
-    // Получаем текущее значение OPENED для сравнения
+    // Получаем текущее значение OPENED для проверки
     $currentOpened = 'N';
     try {
         $arEntity = $entity->GetByID($entityId);
@@ -354,6 +366,17 @@ function updateEntity(int $entityTypeId, int $entityId, int $userId): array
         }
     } catch (\Throwable $e) {
         // Игнорируем ошибку получения данных
+    }
+
+    // Проверяем: если OPENED уже 'Y', выходим без изменений
+    if ($currentOpened === 'Y') {
+        return array(
+            'success' => true,
+            'entity_type_id' => $entityTypeId,
+            'entity_id' => $entityId,
+            'skipped' => true,
+            'reason' => 'OPENED уже установлен в Y'
+        );
     }
 
     // Обновляем сущность
