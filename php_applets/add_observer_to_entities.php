@@ -148,6 +148,43 @@ function getEntityClass(int $entityTypeId): ?string
 }
 
 /**
+ * Добавляет запись в историю CRM сущности
+ * 
+ * @param int $entityTypeId Тип сущности (CCrmOwnerType)
+ * @param int $entityId ID сущности
+ * @param string $fieldName Имя поля
+ * @param string $eventText Текст события
+ * @param int|null $systemUserId ID пользователя для системной записи (по умолчанию 1)
+ */
+function addHistoryRecord(int $entityTypeId, int $entityId, string $fieldName, string $eventText, ?int $systemUserId = 1): void
+{
+    try {
+        $entityTypeName = \CCrmOwnerType::ResolveName($entityTypeId);
+        if (empty($entityTypeName)) {
+            return; // Не удалось определить тип сущности
+        }
+
+        // Используем системного пользователя (ID 1) или переданный
+        $historyUserId = $systemUserId > 0 ? $systemUserId : 1;
+
+        $event = new \CCrmEvent();
+        $event->Add(array(
+            'ENTITY_TYPE' => $entityTypeName,
+            'ENTITY_ID' => $entityId,
+            'ENTITY_FIELD' => $fieldName,
+            'EVENT_TYPE' => \CCrmEvent::TYPE_CHANGE,
+            'USER_ID' => $historyUserId,
+            'EVENT_NAME' => 'Изменение',
+            'EVENT_TEXT_1' => $eventText,
+            'EVENT_TEXT_2' => ''
+        ), false); // false = без проверки прав доступа
+    } catch (\Throwable $e) {
+        // Игнорируем ошибки записи истории, чтобы не прервать основной процесс
+        // Можно залогировать если нужно
+    }
+}
+
+/**
  * Обновляет динамическую CRM сущность через новый API (Factory/Item)
  */
 function updateDynamicEntity(int $entityTypeId, int $entityId, int $userId): array
@@ -178,6 +215,9 @@ function updateDynamicEntity(int $entityTypeId, int $entityId, int $userId): arr
             $currentObservers = array();
         }
 
+        // Получаем текущее значение OPENED до изменения
+        $wasOpened = $item->getOpened() ?? false;
+
         // Объединяем с новым наблюдателем (merge)
         $newObservers = array_unique(
             array_merge($currentObservers, array($userId)),
@@ -203,6 +243,42 @@ function updateDynamicEntity(int $entityTypeId, int $entityId, int $userId): arr
         $result = $operation->launch();
         
         if ($result->isSuccess()) {
+            // Получаем информацию о пользователе для истории
+            $userName = '';
+            try {
+                $user = \CUser::GetByID($userId)->Fetch();
+                if ($user) {
+                    $userName = trim($user['NAME'] . ' ' . $user['LAST_NAME']);
+                    if (empty($userName)) {
+                        $userName = $user['LOGIN'] ?? "ID: {$userId}";
+                    }
+                }
+            } catch (\Throwable $e) {
+                $userName = "ID: {$userId}";
+            }
+
+            // Записываем в историю: добавлен наблюдатель
+            if (!in_array($userId, $currentObservers)) {
+                addHistoryRecord(
+                    $entityTypeId,
+                    $entityId,
+                    'OBSERVER_IDS',
+                    "Добавлен наблюдатель: {$userName}",
+                    1
+                );
+            }
+
+            // Записываем в историю: установлено "Доступен для всех" (если изменилось)
+            if (!$wasOpened) {
+                addHistoryRecord(
+                    $entityTypeId,
+                    $entityId,
+                    'OPENED',
+                    'Доступен для всех: Да',
+                    1
+                );
+            }
+
             return array(
                 'success' => true,
                 'entity_type_id' => $entityTypeId,
@@ -269,11 +345,58 @@ function updateEntity(int $entityTypeId, int $entityId, int $userId): array
     // Создаем экземпляр сущности без проверки прав
     $entity = new $entityClass(false);
 
+    // Получаем текущее значение OPENED для сравнения
+    $currentOpened = 'N';
+    try {
+        $arEntity = $entity->GetByID($entityId);
+        if ($arEntity && isset($arEntity['OPENED'])) {
+            $currentOpened = $arEntity['OPENED'];
+        }
+    } catch (\Throwable $e) {
+        // Игнорируем ошибку получения данных
+    }
+
     // Обновляем сущность
     // Параметры: ID, fields, bCompare, bUpdateSearch, options
     $result = $entity->Update($entityId, $fields, true, true, array('DISABLE_USER_FIELD_CHECK' => true));
 
     if ($result) {
+        // Получаем информацию о пользователе для истории
+        $userName = '';
+        try {
+            $user = \CUser::GetByID($userId)->Fetch();
+            if ($user) {
+                $userName = trim($user['NAME'] . ' ' . $user['LAST_NAME']);
+                if (empty($userName)) {
+                    $userName = $user['LOGIN'] ?? "ID: {$userId}";
+                }
+            }
+        } catch (\Throwable $e) {
+            $userName = "ID: {$userId}";
+        }
+
+        // Записываем в историю: добавлен наблюдатель
+        if (!in_array($userId, $currentObservers)) {
+            addHistoryRecord(
+                $entityTypeId,
+                $entityId,
+                'OBSERVER_IDS',
+                "Добавлен наблюдатель: {$userName}",
+                1
+            );
+        }
+
+        // Записываем в историю: установлено "Доступен для всех" (если изменилось)
+        if ($currentOpened !== 'Y') {
+            addHistoryRecord(
+                $entityTypeId,
+                $entityId,
+                'OPENED',
+                'Доступен для всех: Да',
+                1
+            );
+        }
+
         return array(
             'success' => true,
             'entity_type_id' => $entityTypeId,
