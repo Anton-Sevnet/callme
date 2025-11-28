@@ -781,12 +781,15 @@ class HelperFuncs {
 	 * Get CRM entity data by phone (Contact/Company/Lead)
 	 * Uses crm.duplicate.findbycomm to search across all CRM entities
 	 * Priority: 1) Contact, 2) Company, 3) Lead
+	 * 
+	 * Также сохраняет все найденные сущности в $globalsObj->crmEntitiesByPhone для последующего использования
 	 *
 	 * @param string $phone
+	 * @param object|null $globalsObj Объект Globals для сохранения найденных сущностей (опционально)
 	 *
 	 * @return array Array with 'name' and 'responsible_user_id' keys, or null values on fail
 	 */
-	public function getCrmEntityDataByPhone($phone){
+	public function getCrmEntityDataByPhone($phone, $globalsObj = null){
 		// Ищем все связанные CRM-сущности по телефону
 		$duplicates = $this->getBitrixApi(array(
 			'TYPE' => 'PHONE',
@@ -795,12 +798,103 @@ class HelperFuncs {
 
 		$result = array(
 			'name' => $phone, // По умолчанию возвращаем номер телефона
-			'responsible_user_id' => null
+			'responsible_user_id' => null,
+			'entity_type' => null,
+			'entity_id' => null
 		);
+
+		// Массив для сохранения всех найденных сущностей
+		$allEntities = array();
 
 		if ($duplicates && isset($duplicates['result']) && !empty($duplicates['result'])) {
 			// Обрабатываем найденные сущности по приоритетам
 			$entities = $duplicates['result'];
+			
+			// Маппинг типов сущностей на числовые ID
+			$entityTypeMap = array(
+				'CONTACT' => 3,
+				'COMPANY' => 4,
+				'LEAD' => 1,
+				'DEAL' => 2,
+			);
+			
+			// Собираем все найденные сущности
+			foreach ($entities as $entityTypeName => $entityIds) {
+				if (!is_array($entityIds) || empty($entityIds)) {
+					continue;
+				}
+				$entityTypeId = $entityTypeMap[$entityTypeName] ?? null;
+				if (!$entityTypeId) {
+					continue;
+				}
+				
+				// Для каждой найденной сущности получаем данные
+				foreach ($entityIds as $entityId) {
+					$entityData = null;
+					$assignedById = null;
+					
+					switch ($entityTypeName) {
+						case 'CONTACT':
+							$contact = $this->getBitrixApi(array('ID' => $entityId), 'crm.contact.get');
+							if ($contact && isset($contact['result'])) {
+								$assignedById = $contact['result']['ASSIGNED_BY_ID'] ?? null;
+								$entityData = array(
+									'ENTITY_TYPE_ID' => $entityTypeId,
+									'ENTITY_ID' => (int)$entityId,
+									'ASSIGNED_BY_ID' => $assignedById ? (int)$assignedById : null
+								);
+							}
+							break;
+						case 'COMPANY':
+							$company = $this->getBitrixApi(array('ID' => $entityId), 'crm.company.get');
+							if ($company && isset($company['result'])) {
+								$assignedById = $company['result']['ASSIGNED_BY_ID'] ?? null;
+								$entityData = array(
+									'ENTITY_TYPE_ID' => $entityTypeId,
+									'ENTITY_ID' => (int)$entityId,
+									'ASSIGNED_BY_ID' => $assignedById ? (int)$assignedById : null
+								);
+							}
+							break;
+						case 'LEAD':
+							$lead = $this->getBitrixApi(array('ID' => $entityId), 'crm.lead.get');
+							if ($lead && isset($lead['result'])) {
+								$assignedById = $lead['result']['ASSIGNED_BY_ID'] ?? null;
+								$entityData = array(
+									'ENTITY_TYPE_ID' => $entityTypeId,
+									'ENTITY_ID' => (int)$entityId,
+									'ASSIGNED_BY_ID' => $assignedById ? (int)$assignedById : null
+								);
+							}
+							break;
+						case 'DEAL':
+							$deal = $this->getBitrixApi(array('ID' => $entityId), 'crm.deal.get');
+							if ($deal && isset($deal['result'])) {
+								$assignedById = $deal['result']['ASSIGNED_BY_ID'] ?? null;
+								$entityData = array(
+									'ENTITY_TYPE_ID' => $entityTypeId,
+									'ENTITY_ID' => (int)$entityId,
+									'ASSIGNED_BY_ID' => $assignedById ? (int)$assignedById : null
+								);
+							}
+							break;
+					}
+					
+					if ($entityData) {
+						$allEntities[] = $entityData;
+					}
+				}
+			}
+			
+			// Сохраняем все найденные сущности в globalsObj
+			if ($globalsObj !== null && !empty($allEntities)) {
+				$globalsObj->crmEntitiesByPhone[$phone] = $allEntities;
+				$this->writeToLog(array(
+					'phone' => $phone,
+					'entities_count' => count($allEntities),
+					'entities' => $allEntities
+				), 'CRM entities found and saved');
+			}
 			
 			// Приоритет №1: Контакт (CONTACT)
 			if (isset($entities['CONTACT']) && !empty($entities['CONTACT'])) {
@@ -811,6 +905,8 @@ class HelperFuncs {
 					$lastName = $contact['result']['LAST_NAME'] ?? '';
 					$result['name'] = $this->translit(trim($name . '_' . $lastName));
 					$result['responsible_user_id'] = $contact['result']['ASSIGNED_BY_ID'] ?? null;
+					$result['entity_type'] = 'CONTACT';
+					$result['entity_id'] = $contactId;
 				}
 			}
 			// Приоритет №2: Компания (COMPANY)
@@ -820,6 +916,8 @@ class HelperFuncs {
 				if ($company && isset($company['result']['TITLE'])) {
 					$result['name'] = $this->translit($company['result']['TITLE']);
 					$result['responsible_user_id'] = $company['result']['ASSIGNED_BY_ID'] ?? null;
+					$result['entity_type'] = 'COMPANY';
+					$result['entity_id'] = $companyId;
 				}
 			}
 			// Приоритет №3: Лид (LEAD)
@@ -830,6 +928,8 @@ class HelperFuncs {
 				if ($lead && isset($lead['result']['ASSIGNED_BY_ID'])) {
 					$result['responsible_user_id'] = $lead['result']['ASSIGNED_BY_ID'];
 				}
+				$result['entity_type'] = 'LEAD';
+				$result['entity_id'] = $leadId;
 			}
 		}
 
@@ -977,23 +1077,85 @@ class HelperFuncs {
 
 	/**
 	 * Show input call data for user with internal number
+	 * Перед показом карточки проверяет, нужно ли добавить пользователя в наблюдатели CRM сущностей
 	 *
 	 * @param int $intNum (user internal number)
 	 * @param int $call_id 
+	 * @param string|null $phoneNumber Номер телефона звонящего (для поиска CRM сущностей)
+	 * @param object|null $globalsObj Объект Globals для доступа к сохраненным CRM сущностям
 	 *
 	 * @return bool 
 	 */
-	public function showInputCall($intNum, $call_id){
+	public function showInputCall($intNum, $call_id, $phoneNumber = null, $globalsObj = null){
 		$user_id = $this->getUSER_IDByIntNum($intNum);
-		if ($user_id){
-			$result = $this->getBitrixApi(array(
-						'CALL_ID' => $call_id,
-						'USER_ID' => $user_id,
-                        'USER_PHONE_INNER' => (string)$intNum,
-						), 'telephony.externalcall.show');
-			return $result;
-		} else 
+		if (!$user_id){
 			return false;
+		}
+
+		// Проверяем, нужно ли добавить пользователя в наблюдатели CRM сущностей
+		if ($phoneNumber !== null && $globalsObj !== null && !empty($globalsObj->crmEntitiesByPhone[$phoneNumber])) {
+			$entities = $globalsObj->crmEntitiesByPhone[$phoneNumber];
+			
+			// Проверяем, является ли пользователь ответственным за ВСЕ найденные сущности
+			$isResponsibleForAll = true;
+			$entitiesToAddObserver = array();
+			
+			foreach ($entities as $entity) {
+				$assignedById = $entity['ASSIGNED_BY_ID'] ?? null;
+				if ($assignedById !== null && (int)$assignedById !== (int)$user_id) {
+					// Пользователь НЕ является ответственным за эту сущность
+					$isResponsibleForAll = false;
+					$entitiesToAddObserver[] = array(
+						'ENTITY_TYPE_ID' => $entity['ENTITY_TYPE_ID'],
+						'ENTITY_ID' => $entity['ENTITY_ID']
+					);
+				}
+			}
+			
+			// Если есть сущности, где пользователь НЕ ответственный - добавляем его в наблюдатели
+			if (!$isResponsibleForAll && !empty($entitiesToAddObserver)) {
+				$this->writeToLog(array(
+					'intNum' => $intNum,
+					'userId' => $user_id,
+					'phoneNumber' => $phoneNumber,
+					'entities_count' => count($entitiesToAddObserver),
+					'entities' => $entitiesToAddObserver
+				), 'showInputCall: adding observer to CRM entities');
+				
+				$observerResult = $this->callAddObserverToEntities($entitiesToAddObserver, $user_id);
+				
+				if ($observerResult === false) {
+					$this->writeToLog(array(
+						'intNum' => $intNum,
+						'userId' => $user_id,
+						'phoneNumber' => $phoneNumber
+					), 'showInputCall: failed to add observer, but continuing with show card');
+					// Продолжаем показ карточки даже если не удалось добавить наблюдателя
+				} else {
+					$this->writeToLog(array(
+						'intNum' => $intNum,
+						'userId' => $user_id,
+						'phoneNumber' => $phoneNumber,
+						'observer_result' => $observerResult
+					), 'showInputCall: observer added successfully');
+				}
+			} else {
+				$this->writeToLog(array(
+					'intNum' => $intNum,
+					'userId' => $user_id,
+					'phoneNumber' => $phoneNumber,
+					'reason' => 'User is responsible for all entities or no entities to process'
+				), 'showInputCall: observer check skipped');
+			}
+		}
+
+		// Показываем карточку звонка
+		$result = $this->getBitrixApi(array(
+					'CALL_ID' => $call_id,
+					'USER_ID' => $user_id,
+                    'USER_PHONE_INNER' => (string)$intNum,
+					), 'telephony.externalcall.show');
+		return $result;
 	}
 
     /**
@@ -1079,6 +1241,105 @@ class HelperFuncs {
 			return $result;
 		} else 
 			return false;
+	}
+
+	/**
+	 * Вызов скрипта add_observer_to_entities.php для добавления наблюдателя к CRM сущностям
+	 *
+	 * @param array $entities Массив сущностей в формате [['ENTITY_TYPE_ID'=>1, 'ENTITY_ID'=>123], ...]
+	 * @param int $userId ID пользователя, которого нужно добавить в наблюдатели
+	 *
+	 * @return array|false Результат выполнения или false при ошибке
+	 */
+	public function callAddObserverToEntities(array $entities, $userId){
+		if (empty($entities) || empty($userId) || $userId <= 0) {
+			$this->writeToLog(array(
+				'entities' => $entities,
+				'userId' => $userId,
+				'reason' => 'Invalid parameters'
+			), 'callAddObserverToEntities: skipped');
+			return false;
+		}
+
+		// Формируем URL скрипта
+		$scriptUrl = $this->getConfig('bitrixApiUrl');
+		if (!$scriptUrl) {
+			$this->writeToLog('bitrixApiUrl not configured', 'callAddObserverToEntities ERROR');
+			return false;
+		}
+
+		// Извлекаем базовый URL (без /rest/...)
+		// Например: https://bitrix.myroomy.com/rest/63/lvmqxemgxl7c0sop/ -> https://bitrix.myroomy.com
+		$parsedUrl = parse_url($scriptUrl);
+		$baseUrl = $parsedUrl['scheme'] . '://' . $parsedUrl['host'];
+		if (isset($parsedUrl['port'])) {
+			$baseUrl .= ':' . $parsedUrl['port'];
+		}
+		
+		// Формируем полный путь к скрипту
+		$scriptUrl = $baseUrl . '/local/cust_app/callme_v2/callme/php_applets/add_observer_to_entities.php';
+
+		// Подготавливаем payload
+		$payload = array(
+			'entities' => $entities,
+			'USER_ID' => (int)$userId
+		);
+
+		$this->writeToLog(array(
+			'url' => $scriptUrl,
+			'payload' => $payload
+		), 'callAddObserverToEntities: calling script');
+
+		// Выполняем HTTP запрос
+		$curl = curl_init();
+		curl_setopt_array($curl, array(
+			CURLOPT_SSL_VERIFYPEER => 0,
+			CURLOPT_POST => 1,
+			CURLOPT_HEADER => 0,
+			CURLOPT_RETURNTRANSFER => 1,
+			CURLOPT_URL => $scriptUrl,
+			CURLOPT_POSTFIELDS => json_encode($payload),
+			CURLOPT_HTTPHEADER => array(
+				'Content-Type: application/json; charset=utf-8'
+			),
+			CURLOPT_TIMEOUT => 30
+		));
+
+		$result = curl_exec($curl);
+		$httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+		$curlError = curl_error($curl);
+		curl_close($curl);
+
+		if ($curlError) {
+			$this->writeToLog(array(
+				'error' => $curlError,
+				'http_code' => $httpCode
+			), 'callAddObserverToEntities: CURL error');
+			return false;
+		}
+
+		if ($httpCode !== 200) {
+			$this->writeToLog(array(
+				'http_code' => $httpCode,
+				'response' => $result
+			), 'callAddObserverToEntities: HTTP error');
+			return false;
+		}
+
+		$decodedResult = json_decode($result, true);
+		if (json_last_error() !== JSON_ERROR_NONE) {
+			$this->writeToLog(array(
+				'response' => $result,
+				'json_error' => json_last_error_msg()
+			), 'callAddObserverToEntities: JSON decode error');
+			return false;
+		}
+
+		$this->writeToLog(array(
+			'result' => $decodedResult
+		), 'callAddObserverToEntities: success');
+
+		return $decodedResult;
 	}
 
     /**

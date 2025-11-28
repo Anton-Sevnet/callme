@@ -60,6 +60,10 @@ class Globals {
     public $amiState = array();
     // Кеш проверок существования пользователей по внутренним номерам (чтобы не проверять повторно)
     public $userExistsByIntNum = array(); // [intNum => bool] - true если пользователь существует, false если нет
+    // Найденные CRM сущности по номеру телефона (для добавления наблюдателей)
+    public $crmEntitiesByPhone = array(); // [phone => [['ENTITY_TYPE_ID'=>1, 'ENTITY_ID'=>123, 'ASSIGNED_BY_ID'=>456], ...]]
+    // Номер телефона по call_id (для поиска CRM сущностей при показе карточки)
+    public $phoneByCallId = array(); // [call_id => phone]
 
     static public function getInstance(){
 		if (null === self::$instance) {

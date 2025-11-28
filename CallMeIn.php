@@ -397,12 +397,15 @@ function callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj)
         return;
     }
 
-    $result = $helper->showInputCall($intNum, $call_id);
+    // Получаем номер телефона из сохраненных данных
+    $phoneNumber = $globalsObj->phoneByCallId[$call_id] ?? null;
+    $result = $helper->showInputCall($intNum, $call_id, $phoneNumber, $globalsObj);
     $helper->writeToLog(array(
         'linkedid' => $linkedid,
         'intNum' => $intNum,
         'userId' => $userId,
         'call_id' => $call_id,
+        'phoneNumber' => $phoneNumber,
         'result' => $result,
     ), 'show input call single');
 
@@ -1703,7 +1706,7 @@ $pamiClient->registerEventListener(
                                     'New NewchannelEvent call');
 
                 //выбираем из битрикса данные CRM-сущности (имя + ответственный) по номеру телефона
-                $crmData = $helper->getCrmEntityDataByPhone($extNum);
+                $crmData = $helper->getCrmEntityDataByPhone($extNum, $globalsObj);
                 $CallMeCallerIDName = $crmData['name'];
                 $responsibleUserId = $crmData['responsible_user_id'];
                 
@@ -1823,6 +1826,8 @@ $pamiClient->registerEventListener(
                     $globalsObj->callsByCallId[$call_id] = $callLinkedid;
                     $globalsObj->uniqueidToLinkedid[$callLinkedid] = $callLinkedid;
                     $globalsObj->intNums[$callLinkedid] = $registerIntNum;
+                    // Сохраняем номер телефона для последующего поиска CRM сущностей
+                    $globalsObj->phoneByCallId[$call_id] = $extNum;
                     if ($registerIntNum) {
                         $globalsObj->callIdByInt[$registerIntNum] = $call_id;
                     }
@@ -2161,10 +2166,13 @@ $pamiClient->registerEventListener(
                     $globalsObj->callIdByInt[$intNum] = $callId;
                     callme_show_card_for_int($linkedid, $intNum, $helper, $globalsObj);
                 } else {
-                    $helper->showInputCall($intNum, $callId);
+                    // Получаем номер телефона из сохраненных данных
+                    $phoneNumber = $globalsObj->phoneByCallId[$callId] ?? null;
+                    $helper->showInputCall($intNum, $callId, $phoneNumber, $globalsObj);
                     $helper->writeToLog(array(
                         'intNum' => $intNum,
                         'call_id' => $callId,
+                        'phoneNumber' => $phoneNumber,
                         'state' => $state,
                     ), 'CALLME_CARD_STATE show without linkedid');
                 }
@@ -2859,6 +2867,23 @@ $pamiClient->registerEventListener(
                 }
                 if ($call_id && isset($globalsObj->callsByCallId[$call_id])) {
                     unset($globalsObj->callsByCallId[$call_id]);
+                }
+                // Очищаем номер телефона и CRM сущности по call_id
+                if ($call_id && isset($globalsObj->phoneByCallId[$call_id])) {
+                    $phoneNumber = $globalsObj->phoneByCallId[$call_id];
+                    unset($globalsObj->phoneByCallId[$call_id]);
+                    // Очищаем CRM сущности для этого номера (если больше нет активных звонков с этим номером)
+                    // Проверяем, есть ли еще активные звонки с этим номером
+                    $hasOtherCalls = false;
+                    foreach ($globalsObj->phoneByCallId as $otherCallId => $otherPhone) {
+                        if ($otherPhone === $phoneNumber && $otherCallId !== $call_id) {
+                            $hasOtherCalls = true;
+                            break;
+                        }
+                    }
+                    if (!$hasOtherCalls && isset($globalsObj->crmEntitiesByPhone[$phoneNumber])) {
+                        unset($globalsObj->crmEntitiesByPhone[$phoneNumber]);
+                    }
                 }
                 if ($linkedid && isset($globalsObj->callCrmData[$linkedid])) {
                     unset($globalsObj->callCrmData[$linkedid]);
