@@ -209,9 +209,32 @@ function updateDynamicEntity(int $entityTypeId, int $entityId, int $userId): arr
             );
         }
 
-        // Проверяем текущее значение OPENED - если уже 'Y', выходим без изменений
-        $currentOpened = $item->getOpened() ?? false;
-        if ($currentOpened === true || $currentOpened === 'Y') {
+        // Проверяем текущее значение OPENED из БД (через remindActual для получения реального значения)
+        // Если уже 'Y' или true, выходим без изменений
+        $currentOpened = null;
+        
+        // Пробуем разные способы получить значение OPENED
+        if ($item->hasField('OPENED')) {
+            $currentOpened = $item->remindActual('OPENED');
+            if ($currentOpened === null) {
+                $currentOpened = $item->get('OPENED');
+            }
+            if ($currentOpened === null) {
+                $currentOpened = $item->getOpened();
+            }
+        }
+        
+        // Проверяем различные форматы: true, 'Y', 1, '1'
+        // Используем строгое сравнение для булевых и нестрогое для строк
+        $isOpened = false;
+        if ($currentOpened === true || $currentOpened === 'Y' || $currentOpened === 1 || $currentOpened === '1') {
+            $isOpened = true;
+        } elseif ($currentOpened !== null && $currentOpened !== false && $currentOpened !== 'N' && $currentOpened !== 0 && $currentOpened !== '0') {
+            // Дополнительная проверка: если значение не пустое и не 'N', считаем что открыто
+            $isOpened = true;
+        }
+        
+        if ($isOpened) {
             return array(
                 'success' => true,
                 'entity_type_id' => $entityTypeId,
@@ -336,6 +359,41 @@ function updateEntity(int $entityTypeId, int $entityId, int $userId): array
         );
     }
 
+    // Создаем экземпляр сущности без проверки прав для получения текущих данных
+    $entity = new $entityClass(false);
+
+    // Получаем текущее значение OPENED для проверки (в самом начале!)
+    // Важно: получаем данные ДО любых изменений
+    $currentOpened = 'N';
+    try {
+        $arEntity = $entity->GetByID($entityId, false); // false = без проверки прав
+        if ($arEntity && isset($arEntity['OPENED'])) {
+            $currentOpened = $arEntity['OPENED'];
+        }
+    } catch (\Throwable $e) {
+        // Игнорируем ошибку получения данных
+    }
+
+    // Проверяем: если OPENED уже 'Y' или true, выходим без изменений
+    // Проверяем различные форматы: 'Y', true, 1, '1'
+    $isOpened = false;
+    if ($currentOpened === 'Y' || $currentOpened === true || $currentOpened === 1 || $currentOpened === '1') {
+        $isOpened = true;
+    } elseif ($currentOpened !== null && $currentOpened !== false && $currentOpened !== 'N' && $currentOpened !== 0 && $currentOpened !== '0') {
+        // Дополнительная проверка: если значение не пустое и не 'N', считаем что открыто
+        $isOpened = true;
+    }
+    
+    if ($isOpened) {
+        return array(
+            'success' => true,
+            'entity_type_id' => $entityTypeId,
+            'entity_id' => $entityId,
+            'skipped' => true,
+            'reason' => 'OPENED уже установлен в Y'
+        );
+    }
+
     // Получаем текущих наблюдателей
     $currentObservers = ObserverManager::getEntityObserverIDs($entityTypeId, $entityId);
     if (!is_array($currentObservers)) {
@@ -353,31 +411,6 @@ function updateEntity(int $entityTypeId, int $entityId, int $userId): array
         'OBSERVER_IDS' => $newObservers,
         'OPENED' => 'Y'
     );
-
-    // Создаем экземпляр сущности без проверки прав
-    $entity = new $entityClass(false);
-
-    // Получаем текущее значение OPENED для проверки
-    $currentOpened = 'N';
-    try {
-        $arEntity = $entity->GetByID($entityId);
-        if ($arEntity && isset($arEntity['OPENED'])) {
-            $currentOpened = $arEntity['OPENED'];
-        }
-    } catch (\Throwable $e) {
-        // Игнорируем ошибку получения данных
-    }
-
-    // Проверяем: если OPENED уже 'Y', выходим без изменений
-    if ($currentOpened === 'Y') {
-        return array(
-            'success' => true,
-            'entity_type_id' => $entityTypeId,
-            'entity_id' => $entityId,
-            'skipped' => true,
-            'reason' => 'OPENED уже установлен в Y'
-        );
-    }
 
     // Обновляем сущность
     // Параметры: ID, fields, bCompare, bUpdateSearch, options
