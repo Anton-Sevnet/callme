@@ -1277,7 +1277,7 @@ class HelperFuncs {
 		}
 		
 		// Формируем полный путь к скрипту
-		$scriptUrl = $baseUrl . '/local/cust_app/callme_v2/callme/php_applets/add_observer_to_entities.php';
+		$scriptUrl = $baseUrl . '/local/cust_app/callme/php_applets/add_observer_to_entities.php';
 
 		// Подготавливаем payload
 		$payload = array(
