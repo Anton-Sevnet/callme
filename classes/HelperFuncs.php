@@ -10,20 +10,6 @@
 class HelperFuncs {
 
     /**
-     * Кэш соответствий USER_ID ↔ внутренний номер.
-     *
-     * @var array<string,int>
-     */
-    private static $userIdByIntCache = array();
-
-    /**
-     * Кэш соответствий USER_ID ↔ внутренний номер.
-     *
-     * @var array<int,string>
-     */
-    private static $intByUserIdCache = array();
-
-    /**
      * Кэш соответствий номеров и источников ROI.
      *
      * @var array<string,string>|null
@@ -32,6 +18,8 @@ class HelperFuncs {
 
 	/**
 	 * Get Internal number by using USER_ID.
+	 * ВНИМАНИЕ: Кеширование отключено для обратного поиска (intNum -> USER_ID),
+	 * так как внутренний номер может меняться для разных USER_ID.
 	 *
 	 * @param int $userid
 	 *
@@ -43,10 +31,8 @@ class HelperFuncs {
         $this->writeToLog($result, 'getIntNumByUSER_ID');
 	    if ($result && isset($result['result'][0]['UF_PHONE_INNER'])){
             $intNum = (string)$result['result'][0]['UF_PHONE_INNER'];
-            if ($intNum !== '') {
-                self::$intByUserIdCache[(int)$userid] = $intNum;
-                self::$userIdByIntCache[$intNum] = (int)$userid;
-            }
+            // НЕ сохраняем в кеш соответствие intNum -> USER_ID, так как оно может измениться
+            // (один внутренний номер может быть назначен другому пользователю)
 	        return $intNum;
 	    }
         return false;
@@ -54,6 +40,8 @@ class HelperFuncs {
 
 	/**
 	 * Get USER_ID by Internal number.
+	 * ВНИМАНИЕ: Кеширование отключено, так как внутренний номер может меняться для разных USER_ID.
+	 * Всегда выполняет запрос к API для получения актуального USER_ID.
 	 *
 	 * @param int $intNum
 	 *
@@ -64,14 +52,11 @@ class HelperFuncs {
         if ($intNum === '') {
             return false;
         }
-        if (isset(self::$userIdByIntCache[$intNum])) {
-            return self::$userIdByIntCache[$intNum];
-        }
-	    $result = $this->getBitrixApi(array('FILTER' => array ('UF_PHONE_INNER' => $intNum,),), 'user.get');
+        // Кеширование отключено - всегда запрашиваем актуальный USER_ID из API
+        $result = $this->getBitrixApi(array('FILTER' => array ('UF_PHONE_INNER' => $intNum,),), 'user.get');
 	    if ($result && isset($result['result'][0]['ID'])){
             $userId = (int)$result['result'][0]['ID'];
-            self::$userIdByIntCache[$intNum] = $userId;
-            self::$intByUserIdCache[$userId] = $intNum;
+            // НЕ сохраняем в кеш, так как соответствие может измениться
 	        return $userId;
 	    }
         return false;
