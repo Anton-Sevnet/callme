@@ -2869,20 +2869,78 @@ $pamiClient->registerEventListener(
                 
                 echo "async upload started \n";
 
-                // удаляем из массивов тот вызов, который завершился
-                $helper->removeItemFromArray($globalsObj->uniqueids,$callLinkedid,'value');
-                $helper->removeItemFromArray($globalsObj->intNums,$callLinkedid,'key');
-                $helper->removeItemFromArray($globalsObj->FullFnameUrls,$callLinkedid,'key');
-                $helper->removeItemFromArray($globalsObj->Durations,$callLinkedid,'key');
-                $helper->removeItemFromArray($globalsObj->Dispositions,$callLinkedid,'key');
-                $helper->removeItemFromArray($globalsObj->calls,$callLinkedid,'key');
-                $helper->removeItemFromArray($globalsObj->Onhold,$event->getChannel(),'key');
-                if ($linkedid && isset($globalsObj->callIdByLinkedid[$linkedid])) {
-                    unset($globalsObj->callIdByLinkedid[$linkedid]);
+                // Собираем все linkedid, связанные с этим call_id, для полной очистки данных
+                // ВАЖНО: Очистка происходит независимо от результата finishCall (даже если Б24 не на связи)
+                $linkedidsToClean = array();
+                if ($linkedid) {
+                    $linkedidsToClean[] = $linkedid;
                 }
+                if ($callLinkedid && $callLinkedid !== $linkedid) {
+                    $linkedidsToClean[] = $callLinkedid;
+                }
+                // Находим все linkedid в массиве calls, которые связаны с этим call_id
+                if ($call_id) {
+                    foreach ($globalsObj->calls as $candidateLinkedid => $candidateCallId) {
+                        if ($candidateCallId === $call_id && !in_array($candidateLinkedid, $linkedidsToClean, true)) {
+                            $linkedidsToClean[] = $candidateLinkedid;
+                        }
+                    }
+                    // Также проверяем callIdByLinkedid
+                    foreach ($globalsObj->callIdByLinkedid as $candidateLinkedid => $candidateCallId) {
+                        if ($candidateCallId === $call_id && !in_array($candidateLinkedid, $linkedidsToClean, true)) {
+                            $linkedidsToClean[] = $candidateLinkedid;
+                        }
+                    }
+                }
+                $helper->writeToLog(array(
+                    'call_id' => $call_id,
+                    'linkedid' => $linkedid,
+                    'callLinkedid' => $callLinkedid,
+                    'linkedidsToClean' => $linkedidsToClean,
+                    'finishResult' => $finishResult ?? 'not called'
+                ), 'HangupEvent: Starting cleanup of call data (regardless of finishCall result)');
+
+                // удаляем из массивов тот вызов, который завершился
+                // Очищаем данные для всех связанных linkedid
+                foreach ($linkedidsToClean as $cleanLinkedid) {
+                    $helper->removeItemFromArray($globalsObj->calls, $cleanLinkedid, 'key');
+                    $helper->removeItemFromArray($globalsObj->Dispositions, $cleanLinkedid, 'key');
+                    $helper->removeItemFromArray($globalsObj->Durations, $cleanLinkedid, 'key');
+                    $helper->removeItemFromArray($globalsObj->FullFnameUrls, $cleanLinkedid, 'key');
+                    if (isset($globalsObj->callIdByLinkedid[$cleanLinkedid])) {
+                        unset($globalsObj->callIdByLinkedid[$cleanLinkedid]);
+                    }
+                }
+                // Очищаем данные для callLinkedid (uniqueid)
+                $helper->removeItemFromArray($globalsObj->uniqueids, $callLinkedid, 'value');
+                $helper->removeItemFromArray($globalsObj->intNums, $callLinkedid, 'key');
+                $helper->removeItemFromArray($globalsObj->FullFnameUrls, $callLinkedid, 'key');
+                $helper->removeItemFromArray($globalsObj->Durations, $callLinkedid, 'key');
+                $helper->removeItemFromArray($globalsObj->Dispositions, $callLinkedid, 'key');
+                $helper->removeItemFromArray($globalsObj->calls, $callLinkedid, 'key');
+                $helper->removeItemFromArray($globalsObj->Onhold, $event->getChannel(), 'key');
                 if ($call_id && isset($globalsObj->callsByCallId[$call_id])) {
                     unset($globalsObj->callsByCallId[$call_id]);
                 }
+                // Очищаем callIdByInt для всех intNum, связанных с этим call_id
+                $cleanedIntNums = array();
+                if ($call_id) {
+                    foreach ($globalsObj->callIdByInt as $intNum => $storedCallId) {
+                        if ($storedCallId === $call_id) {
+                            $cleanedIntNums[] = $intNum;
+                            unset($globalsObj->callIdByInt[$intNum]);
+                        }
+                    }
+                }
+                $helper->writeToLog(array(
+                    'call_id' => $call_id,
+                    'cleanedLinkedids' => $linkedidsToClean,
+                    'cleanedIntNums' => $cleanedIntNums,
+                    'callsArraySize' => count($globalsObj->calls),
+                    'dispositionsArraySize' => count($globalsObj->Dispositions),
+                    'callIdByLinkedidSize' => count($globalsObj->callIdByLinkedid),
+                    'callIdByIntSize' => count($globalsObj->callIdByInt)
+                ), 'HangupEvent: Cleanup completed - all call data removed from memory');
                 // Очищаем номер телефона и CRM сущности по call_id
                 if ($call_id && isset($globalsObj->phoneByCallId[$call_id])) {
                     $phoneNumber = $globalsObj->phoneByCallId[$call_id];
