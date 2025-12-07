@@ -774,7 +774,9 @@ $pamiClient->registerEventListener(
         $callId = $globalsObj->calls[$externalUniqueid] ?? null;
         $externalLinkedid = $globalsObj->uniqueidToLinkedid[$externalUniqueid] ?? null;
         $internalLinkedid = $internalUniqueid ? ($globalsObj->uniqueidToLinkedid[$internalUniqueid] ?? null) : null;
-        $linkedid = $internalLinkedid ?? $externalLinkedid;
+        // ИСПРАВЛЕНИЕ: Используем externalLinkedid (оригинальный linkedid звонка) вместо internalLinkedid
+        // чтобы сохранить связь с исходными данными звонка (answer_int_num, callCrmData и т.д.)
+        $linkedid = $externalLinkedid ?? $internalLinkedid;
 
         if (!$callId && $linkedid && isset($globalsObj->callIdByLinkedid[$linkedid])) {
             $callId = $globalsObj->callIdByLinkedid[$linkedid];
@@ -824,7 +826,8 @@ $pamiClient->registerEventListener(
         }
 
         if (!$linkedid) {
-            $linkedid = $globalsObj->callsByCallId[$callId] ?? ($internalLinkedid ?? $externalUniqueid);
+            // ИСПРАВЛЕНИЕ: Приоритетно используем externalLinkedid для сохранения связи с исходными данными
+            $linkedid = $globalsObj->callsByCallId[$callId] ?? ($externalLinkedid ?? $internalLinkedid ?? $externalUniqueid);
         }
 
         $globalsObj->callIdByLinkedid[$linkedid] = $callId;
@@ -856,8 +859,24 @@ $pamiClient->registerEventListener(
             if (empty($globalsObj->Answers[$externalUniqueid])) {
                 $globalsObj->Answers[$externalUniqueid] = $answerTimestamp;
             }
+            // ИСПРАВЛЕНИЕ: Сохраняем answer_int_num для всех связанных linkedid
+            // чтобы можно было найти его даже если linkedid изменился
             if ($linkedid) {
                 $globalsObj->callCrmData[$linkedid]['answer_int_num'] = $newIntNum;
+            }
+            // Также сохраняем для externalLinkedid, если он отличается от linkedid
+            if ($externalLinkedid && $externalLinkedid !== $linkedid) {
+                if (!isset($globalsObj->callCrmData[$externalLinkedid])) {
+                    $globalsObj->callCrmData[$externalLinkedid] = array();
+                }
+                $globalsObj->callCrmData[$externalLinkedid]['answer_int_num'] = $newIntNum;
+            }
+            // И для internalLinkedid, если он отличается
+            if ($internalLinkedid && $internalLinkedid !== $linkedid && $internalLinkedid !== $externalLinkedid) {
+                if (!isset($globalsObj->callCrmData[$internalLinkedid])) {
+                    $globalsObj->callCrmData[$internalLinkedid] = array();
+                }
+                $globalsObj->callCrmData[$internalLinkedid]['answer_int_num'] = $newIntNum;
             }
 
             callme_transfer_move_card($linkedid, $callId, null, $newIntNum, $helper, $globalsObj, array(
@@ -2651,10 +2670,34 @@ $pamiClient->registerEventListener(
                 if (!$finishIntNum && isset($globalsObj->transferHistory[$callLinkedid]['currentIntNum'])) {
                     $finishIntNum = (string)$globalsObj->transferHistory[$callLinkedid]['currentIntNum'];
                 }
-                if (!$finishIntNum && $linkedid && !empty($globalsObj->callCrmData[$linkedid]['answer_int_num'])) {
-                    $finishIntNum = (string)$globalsObj->callCrmData[$linkedid]['answer_int_num'];
+                // ИСПРАВЛЕНИЕ: Ищем answer_int_num по всем связанным linkedid, а не только по текущему
+                // Это важно, т.к. BridgeEvent может изменить linkedid, но answer_int_num сохранен для оригинального
+                if (!$finishIntNum) {
+                    // Сначала проверяем текущий linkedid
+                    if ($linkedid && !empty($globalsObj->callCrmData[$linkedid]['answer_int_num'])) {
+                        $finishIntNum = (string)$globalsObj->callCrmData[$linkedid]['answer_int_num'];
+                    }
+                    // Если не нашли, проверяем callLinkedid (original uniqueid)
+                    if (!$finishIntNum && $callLinkedid) {
+                        $originalLinkedid = $globalsObj->uniqueidToLinkedid[$callLinkedid] ?? $callLinkedid;
+                        if ($originalLinkedid !== $linkedid && !empty($globalsObj->callCrmData[$originalLinkedid]['answer_int_num'])) {
+                            $finishIntNum = (string)$globalsObj->callCrmData[$originalLinkedid]['answer_int_num'];
+                        }
+                    }
+                    // Если все еще не нашли, ищем по всем linkedid, связанным с call_id
+                    if (!$finishIntNum && $call_id) {
+                        foreach ($globalsObj->callIdByLinkedid as $candidateLinkedid => $candidateCallId) {
+                            if ($candidateCallId === $call_id && !empty($globalsObj->callCrmData[$candidateLinkedid]['answer_int_num'])) {
+                                $finishIntNum = (string)$globalsObj->callCrmData[$candidateLinkedid]['answer_int_num'];
+                                break;
+                            }
+                        }
+                    }
                 }
-                if ($primaryTarget) {
+                // ИСПРАВЛЕНИЕ: Приоритетно используем answer_int_num перед primaryTarget
+                // т.к. answer_int_num указывает на реального ответившего, а primaryTarget - на первого показанного
+                // primaryTarget используем только если answer_int_num не найден
+                if ($primaryTarget && !$finishIntNum) {
                     $finishIntNum = $primaryTarget['int_num'] ?? $finishIntNum;
                     $primaryUserId = $primaryTarget['user_id'] ?? null;
                     // Проверяем, что user_id валидный (> 0)
@@ -2684,11 +2727,29 @@ $pamiClient->registerEventListener(
                     }
                 }
 
-                // Если пользователя с вызываемым номером нет в Б24, используем USER_ID (ответственный из CRM или fallback)
+                // Если пользователя с вызываемым номером нет в Б24, используем USER_ID изначального ответственного
+                // (на кого был зарегистрирован звонок) или fallback
                 // Для неотвеченных вызовов (304) не перезаписываем finishUserId, если он уже установлен из initial_responsible_user_id
                 if ($finishIntNum && ($finishUserId === false || $finishUserId === null || $finishUserId <= 0) && ($statusCode != 304 || !isset($globalsObj->callCrmData[$linkedid]['initial_responsible_user_id']))) {
-                    // Пробуем взять ответственного из CRM (проверяем, что значение валидное и > 0)
-                    if ($linkedid && isset($globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'])) {
+                    // ИСПРАВЛЕНИЕ: Если ответил пользователь без USER_ID в Б24, используем изначального ответственного
+                    // (initial_responsible_user_id), на кого был зарегистрирован звонок
+                    if ($linkedid && isset($globalsObj->callCrmData[$linkedid]['initial_responsible_user_id'])) {
+                        $initialResponsibleId = $globalsObj->callCrmData[$linkedid]['initial_responsible_user_id'];
+                        if (!empty($initialResponsibleId) && is_numeric($initialResponsibleId)) {
+                            $initialResponsibleId = (int)$initialResponsibleId;
+                            if ($initialResponsibleId > 0) {
+                                $finishUserId = $initialResponsibleId;
+                                $helper->writeToLog(array(
+                                    'finishIntNum' => $finishIntNum,
+                                    'finishUserId' => $finishUserId,
+                                    'source' => 'initial_responsible_user_id',
+                                    'reason' => 'User answered but not found in B24, using initial responsible user from registration',
+                                ), 'User not found by intNum, using initial responsible user');
+                            }
+                        }
+                    }
+                    // Если нет initial_responsible_user_id, пробуем взять ответственного из CRM
+                    if (($finishUserId === false || $finishUserId === null || $finishUserId <= 0) && $linkedid && isset($globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'])) {
                         $crmResponsibleId = $globalsObj->callCrmData[$linkedid]['crm_responsible_user_id'];
                         if (!empty($crmResponsibleId) && is_numeric($crmResponsibleId)) {
                             $crmResponsibleId = (int)$crmResponsibleId;
