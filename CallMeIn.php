@@ -105,11 +105,24 @@ $helper->writeToLog(NULL,
 if (!is_array($globalsObj->amiState) || empty($globalsObj->amiState)) {
     $globalsObj->amiState = array(
         'lastEventTs' => microtime(true),
+        'lastDataTs' => microtime(true),
         'lastHash' => null,
         'hashStableSince' => null,
         'lastPingTs' => 0,
         'lastPingStatus' => null,
+        'consecutiveReconnects' => 0,
+        'reconnectSuccessTs' => null,
     );
+} else {
+    if (!isset($globalsObj->amiState['lastDataTs'])) {
+        $globalsObj->amiState['lastDataTs'] = microtime(true);
+    }
+    if (!isset($globalsObj->amiState['consecutiveReconnects'])) {
+        $globalsObj->amiState['consecutiveReconnects'] = 0;
+    }
+    if (!array_key_exists('reconnectSuccessTs', $globalsObj->amiState)) {
+        $globalsObj->amiState['reconnectSuccessTs'] = null;
+    }
 }
 
 $healthCheckTimeoutSec = (int) $helper->getConfig('healthCheckTimeout');
@@ -127,9 +140,27 @@ if ($listenerTimeoutMicro <= 0) {
 $healthCheckCycleThreshold = max(1, (int) ceil($healthCheckTimeoutSec / ($listenerTimeoutMicro / 1000000)));
 $healthCheckCycleCounter = 0;
 
+$silenceTimeoutSec = (int) $helper->getConfig('silenceTimeout');
+if ($silenceTimeoutSec <= 0) {
+    $silenceTimeoutSec = 90;
+}
+$postReconnectGraceSec = (int) $helper->getConfig('postReconnectGrace');
+if ($postReconnectGraceSec <= 0) {
+    $postReconnectGraceSec = 30;
+}
+$maxConsecutiveReconnects = (int) $helper->getConfig('maxConsecutiveReconnects');
+if ($maxConsecutiveReconnects <= 0) {
+    $maxConsecutiveReconnects = 5;
+}
+
 function ami_touch_activity($globalsObj)
 {
-    $globalsObj->amiState['lastEventTs'] = microtime(true);
+    $now = microtime(true);
+    $globalsObj->amiState['lastEventTs'] = $now;
+    $globalsObj->amiState['lastDataTs'] = $now;
+    if (isset($globalsObj->amiState['consecutiveReconnects']) && $globalsObj->amiState['consecutiveReconnects'] > 0) {
+        $globalsObj->amiState['consecutiveReconnects'] = 0;
+    }
 }
 
 function ami_update_originate_activity(EventMessage $event, $globalsObj)
@@ -180,9 +211,16 @@ function compute_active_calls_hash($globalsObj)
     return md5($encoded);
 }
 
-function ami_attempt_reconnect($pamiClient, $helper, $globalsObj)
+function ami_attempt_reconnect($pamiClient, $helper, $globalsObj, $maxConsecutiveReconnects = 5)
 {
-    $helper->logAmiHealth('reconnect', 'NOTICE', 'Попытка переподключения к AMI после сбоя.');
+    $globalsObj->amiState['consecutiveReconnects'] = ($globalsObj->amiState['consecutiveReconnects'] ?? 0) + 1;
+    $count = $globalsObj->amiState['consecutiveReconnects'];
+
+    $helper->logAmiHealth('reconnect', 'NOTICE', 'Попытка переподключения к AMI после сбоя.', array(
+        'consecutive_reconnects' => $count,
+        'max_consecutive_reconnects' => $maxConsecutiveReconnects,
+    ));
+
     try {
         $pamiClient->close();
     } catch (\Throwable $closeError) {
@@ -198,15 +236,22 @@ function ami_attempt_reconnect($pamiClient, $helper, $globalsObj)
         $globalsObj->amiState['hashStableSince'] = null;
         $globalsObj->amiState['lastPingStatus'] = 'reconnected';
         $globalsObj->amiState['lastPingTs'] = microtime(true);
+        $globalsObj->amiState['reconnectSuccessTs'] = microtime(true);
         $helper->logAmiHealth('reconnect', 'NOTICE', 'Соединение с AMI восстановлено.');
         return true;
     } catch (ClientException $reconnectError) {
         $helper->logAmiHealth('reconnect', 'NOTICE', 'Не удалось переподключиться к AMI', array('error' => $reconnectError->getMessage()));
+        if ($count >= $maxConsecutiveReconnects) {
+            $helper->logAmiHealth('reconnect', 'NOTICE', 'Escalation: достигнут лимит реконнектов, выход для перезапуска supervisord.', array(
+                'consecutive_reconnects' => $count,
+            ));
+            exit(1);
+        }
         return false;
     }
 }
 
-function ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pingIdleTimeoutSec)
+function ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pingIdleTimeoutSec, $maxConsecutiveReconnects = 5)
 {
     $now = microtime(true);
     $stats = $pamiClient->getLastReadStats();
@@ -215,10 +260,21 @@ function ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pin
     $timeSinceEvent = $now - ($globalsObj->amiState['lastEventTs'] ?? 0);
 
     $currentHash = compute_active_calls_hash($globalsObj);
+
     if ($currentHash === null) {
         $globalsObj->amiState['lastHash'] = null;
         $globalsObj->amiState['hashStableSince'] = null;
-        return;
+        if ($timeSinceData < $pingIdleTimeoutSec || $timeSinceEvent < $pingIdleTimeoutSec) {
+            return;
+        }
+        if (!empty($globalsObj->amiState['lastPingTs']) && ($now - $globalsObj->amiState['lastPingTs']) < 5) {
+            return;
+        }
+        $helper->logAmiHealth('ping', 'NOTICE', 'Инициирован пинг AMI: нет данных от AMI (звонков нет).', array(
+            'time_since_data' => $timeSinceData,
+            'time_since_event' => $timeSinceEvent,
+        ));
+        goto do_ping;
     }
 
     if ($globalsObj->amiState['lastHash'] !== $currentHash) {
@@ -252,6 +308,7 @@ function ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pin
         'hash_stable_duration' => $hashStableDuration,
     ));
 
+do_ping:
     try {
         $response = $pamiClient->send(new PingAction());
         $globalsObj->amiState['lastPingTs'] = microtime(true);
@@ -264,14 +321,93 @@ function ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pin
             array('response' => $response->getMessage())
         );
         if (!$response->isSuccess()) {
-            ami_attempt_reconnect($pamiClient, $helper, $globalsObj);
+            ami_attempt_reconnect($pamiClient, $helper, $globalsObj, $maxConsecutiveReconnects);
         }
     } catch (ClientException $pingError) {
         $globalsObj->amiState['lastPingTs'] = microtime(true);
         $globalsObj->amiState['lastPingStatus'] = 'error';
         $helper->logAmiHealth('ping', 'NOTICE', 'Исключение при выполнении AMI ping.', array('error' => $pingError->getMessage()));
-        ami_attempt_reconnect($pamiClient, $helper, $globalsObj);
+        ami_attempt_reconnect($pamiClient, $helper, $globalsObj, $maxConsecutiveReconnects);
     }
+}
+
+/**
+ * Безусловный Silence Watchdog: при отсутствии любых данных от AMI дольше silenceTimeoutSec
+ * отправляет Ping и при неудаче инициирует реконнект. Работает независимо от наличия звонков.
+ */
+function ami_check_silence_watchdog($pamiClient, $helper, $globalsObj, $silenceTimeoutSec, $maxConsecutiveReconnects = 5)
+{
+    $now = microtime(true);
+    $stats = $pamiClient->getLastReadStats();
+    $lastReadTs = isset($stats['timestamp']) ? (float) $stats['timestamp'] : 0.0;
+    $timeSinceData = $lastReadTs > 0 ? $now - $lastReadTs : $silenceTimeoutSec + 1;
+
+    if ($timeSinceData < $silenceTimeoutSec) {
+        return;
+    }
+
+    $helper->logAmiHealth('watchdog', 'NOTICE', 'Silence watchdog: нет данных от AMI.', array(
+        'time_since_data_sec' => round($timeSinceData, 1),
+        'silence_timeout_sec' => $silenceTimeoutSec,
+    ));
+
+    try {
+        $response = $pamiClient->send(new PingAction());
+        if ($response->isSuccess()) {
+            $helper->logAmiHealth('watchdog', 'DEBUG', 'Silence watchdog: ping успешен, соединение живо.');
+            $globalsObj->amiState['lastDataTs'] = $now;
+            return;
+        }
+        $helper->logAmiHealth('watchdog', 'NOTICE', 'Silence watchdog: ping вернул ошибку, реконнект.', array('response' => $response->getMessage()));
+        ami_attempt_reconnect($pamiClient, $helper, $globalsObj, $maxConsecutiveReconnects);
+    } catch (ClientException $e) {
+        $helper->logAmiHealth('watchdog', 'NOTICE', 'Silence watchdog: исключение при ping, реконнект.', array('error' => $e->getMessage()));
+        ami_attempt_reconnect($pamiClient, $helper, $globalsObj, $maxConsecutiveReconnects);
+    }
+}
+
+/**
+ * Post-reconnect верификация: если после успешного open() в течение grace-периода не пришло ни одного события,
+ * считаем реконнект неудачным, увеличиваем счётчик и при достижении лимита завершаем процесс для перезапуска supervisord.
+ * Возвращает true если процесс должен продолжить работу, false если вызван exit(1).
+ */
+function ami_check_post_reconnect_grace($helper, $globalsObj, $postReconnectGraceSec, $maxConsecutiveReconnects)
+{
+    $reconnectTs = $globalsObj->amiState['reconnectSuccessTs'] ?? null;
+    if ($reconnectTs === null) {
+        return true;
+    }
+
+    $now = microtime(true);
+    $graceElapsed = $now - $reconnectTs;
+    if ($graceElapsed < $postReconnectGraceSec) {
+        return true;
+    }
+
+    $lastDataTs = $globalsObj->amiState['lastDataTs'] ?? 0;
+    if ($lastDataTs >= $reconnectTs) {
+        $globalsObj->amiState['reconnectSuccessTs'] = null;
+        return true;
+    }
+
+    $globalsObj->amiState['reconnectSuccessTs'] = null;
+    $globalsObj->amiState['consecutiveReconnects'] = ($globalsObj->amiState['consecutiveReconnects'] ?? 0) + 1;
+    $count = $globalsObj->amiState['consecutiveReconnects'];
+
+    $helper->logAmiHealth('reconnect', 'NOTICE', 'Post-reconnect verification failed: нет событий после реконнекта.', array(
+        'grace_sec' => $postReconnectGraceSec,
+        'consecutive_reconnects' => $count,
+        'max_consecutive_reconnects' => $maxConsecutiveReconnects,
+    ));
+
+    if ($count >= $maxConsecutiveReconnects) {
+        $helper->logAmiHealth('reconnect', 'NOTICE', 'Escalation: достигнут лимит реконнектов, выход для перезапуска supervisord.', array(
+            'consecutive_reconnects' => $count,
+        ));
+        exit(1);
+    }
+
+    return true;
 }
 
 /**
@@ -1173,6 +1309,7 @@ function callme_handle_user_event_ringing_answer(EventMessage $event, HelperFunc
  */
 function callme_handle_user_event_ringing_stop(EventMessage $event, HelperFuncs $helper, Globals $globalsObj)
 {
+    /** @var DialEndEvent $event */
     $linkedid = (string) ($event->getKey('Linkedid') ?? $event->getKey('LinkedID') ?? '');
     $linkedid = trim($linkedid);
     if ($linkedid === '') {
@@ -1556,6 +1693,7 @@ function callme_handle_dial_end_common(
     }
     $now = time();
 
+    /** @var DialEndEvent $event */
     switch ($event->getDialStatus()) {
         case 'ANSWER':
             if ($linkedid && isset($globalsObj->ringingIntNums[$linkedid][$currentIntNum])) {
@@ -1700,6 +1838,7 @@ $pamiClient->registerEventListener(
 // Диагностическое логирование событий Dial (Asterisk 1.8)
 $pamiClient->registerEventListener(
             function (EventMessage $event) use ($helper,$callami,$globalsObj){
+                /** @var NewchannelEvent $event */
                 //выгребаем параметры звонка
 
                 $callLinkedid = $event->getKey("Uniqueid");
@@ -1885,6 +2024,7 @@ $pamiClient->registerEventListener(
                 echo "\n\r";
 
             }, function (EventMessage $event) use ($helper, $globalsObj){
+                    /** @var NewchannelEvent $event */
                     //для фильтра берем только указанные внешние номера
 
                     return
@@ -1902,6 +2042,7 @@ $pamiClient->registerEventListener(
 //NewchannelEvent outgoing
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper,$callami,$globalsObj){
+        /** @var NewchannelEvent $event */
         //выгребаем параметры звонка
         $callLinkedid = $event->getKey("Uniqueid");
         $extNum = $event->getExtension();
@@ -1930,7 +2071,7 @@ $pamiClient->registerEventListener(
         $helper->writeToLog($event->getRawContent()."\n");
         $helper->writeToLog(var_export($result, true), "show output card to $intNum ");
 
-        if ($call_id == false) {
+        if ($call_id === false || !is_string($call_id)) {
             echo "\n-------------------------------------------------------------------\n\r";
             echo "\n\r";
             return "";
@@ -1954,7 +2095,7 @@ $pamiClient->registerEventListener(
         echo "\n\r";
 
     },function (EventMessage $event) use ($globalsObj){
-
+    /** @var NewchannelEvent $event */
     if (!($event instanceof NewchannelEvent)) {
         return false;
     }
@@ -2005,6 +2146,7 @@ $pamiClient->registerEventListener(
 //VarSetEvent
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper,$globalsObj) {
+        /** @var VarSetEvent $event */
         echo 'VarSetEvent'."\n";
         echo $event->getRawContent();
 
@@ -2252,6 +2394,7 @@ $pamiClient->registerEventListener(
         echo "\n-------------------------------------------------------------------\n\r";
         echo "\n\r";
         },function (EventMessage $event) use ($globalsObj) {
+        /** @var VarSetEvent $event */
         return
             $event instanceof VarSetEvent
             && (
@@ -2271,6 +2414,7 @@ $pamiClient->registerEventListener(
 //обрабатываем HoldEvent события
 $pamiClient->registerEventListener(
             function (EventMessage $event) use ($helper,$globalsObj, $callami) {
+                /** @var \PAMI\Message\Event\MusicOnHoldStartEvent $event */
                 //выгребаем параметры звонка
 
                 echo "HoldEvent\n\r";
@@ -2291,6 +2435,7 @@ $pamiClient->registerEventListener(
 //обрабатываем DialBeginEvent события
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper,$globalsObj, $callami) {
+        /** @var DialBeginEvent $event */
         //выгребаем параметры звонка
 	    echo "Dial Begin ";
         echo $event->getRawContent()."\n\r";
@@ -2476,6 +2621,7 @@ $pamiClient->registerEventListener(
 //обрабатываем DialEndEvent события
 $pamiClient->registerEventListener(
             function (EventMessage $event) use ($helper,$globalsObj) {
+                /** @var DialEndEvent $event */
                 echo "DialEndEvent\n\r";
                 echo $event->getRawContent()."\n\r";
                 //выгребаем параметры звонка
@@ -2526,6 +2672,7 @@ $pamiClient->registerEventListener(
 //обрабатываем HangupEvent события, отдаем информацию о звонке и url его записи в битрикс
 $pamiClient->registerEventListener(
             function (EventMessage $event) use ($callami, $helper, $globalsObj) {
+                /** @var HangupEvent $event */
                 $helper->writeToLog($event->getRawContent()."\n\r");
                 echo "HangupEvent\n\r";
                 echo $event->getRawContent()."\n\r";
@@ -3069,6 +3216,7 @@ $pamiClient->registerEventListener(
 // 1. VarSetEvent (CallMeLINKEDID) - фиксируем маппинг UniqueID ↔ linkedid
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
+        /** @var VarSetEvent $event */
         $uniqueid = $event->getKey("Uniqueid");
         $linkedid = $event->getValue(); // Значение переменной = Linkedid
         $channel = $event->getChannel();
@@ -3089,6 +3237,7 @@ $pamiClient->registerEventListener(
         ], 'LINKEDID: Mapping updated');
     },
     function (EventMessage $event) {
+        /** @var VarSetEvent $event */
         return $event instanceof VarSetEvent
             && $event->getVariableName() === 'CallMeLINKEDID';
     }
@@ -3097,6 +3246,7 @@ $pamiClient->registerEventListener(
 // 2. VarSetEvent (IS_CALLME_ORIGINATE) - маркер Originate-вызова, ЗДЕСЬ создаём структуру
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
+        /** @var VarSetEvent $event */
         $uniqueid = $event->getKey("Uniqueid");
         $channel = $event->getChannel();
         
@@ -3151,6 +3301,7 @@ $pamiClient->registerEventListener(
 // 3. VarSetEvent (CallMeCALL_ID) - получение call_id от Bitrix24 (ТОЛЬКО для Originate!)
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
+        /** @var VarSetEvent $event */
         $uniqueid = $event->getKey("Uniqueid");
         $call_id = $event->getValue();
         $channel = $event->getChannel();
@@ -3188,6 +3339,7 @@ $pamiClient->registerEventListener(
         ], 'ORIGINATE: Tracking started with call_id');
     },
     function (EventMessage $event) {
+        /** @var VarSetEvent $event */
         return $event instanceof VarSetEvent 
             && $event->getVariableName() === 'CallMeCALL_ID';
     }
@@ -3196,6 +3348,7 @@ $pamiClient->registerEventListener(
 // 4. DialEndEvent - результат набора внешнего номера
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
+        /** @var DialEndEvent $event */
         $uniqueid = $event->getKey("UniqueID");
         $dialStatus = $event->getDialStatus();
         
@@ -3267,6 +3420,7 @@ $pamiClient->registerEventListener(
 // 5. VarSetEvent (CallMeFULLFNAME) - получение URL записи для Originate
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
+        /** @var VarSetEvent $event */
         $uniqueid = $event->getKey("Uniqueid");
         $relativePath = $event->getValue();
         
@@ -3288,6 +3442,7 @@ $pamiClient->registerEventListener(
         }
     },
     function (EventMessage $event) use ($globalsObj) {
+        /** @var VarSetEvent $event */
         $uniqueid = $event->getKey("Uniqueid");
         return $event instanceof VarSetEvent 
             && $event->getVariableName() === 'CallMeFULLFNAME'
@@ -3522,7 +3677,7 @@ while(true) {
         $pamiClient->process();
     } catch (ClientException $processError) {
         $helper->logAmiHealth('reconnect', 'NOTICE', 'Ошибка чтения AMI в основном цикле.', array('error' => $processError->getMessage()));
-        ami_attempt_reconnect($pamiClient, $helper, $globalsObj);
+        ami_attempt_reconnect($pamiClient, $helper, $globalsObj, $maxConsecutiveReconnects);
         usleep($listenerTimeoutMicro);
         continue;
     }
@@ -3530,7 +3685,9 @@ while(true) {
     $healthCheckCycleCounter++;
     if ($healthCheckCycleCounter >= $healthCheckCycleThreshold) {
         $healthCheckCycleCounter = 0;
-        ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pingIdleTimeoutSec);
+        ami_check_silence_watchdog($pamiClient, $helper, $globalsObj, $silenceTimeoutSec, $maxConsecutiveReconnects);
+        ami_perform_idle_ping_if_needed($pamiClient, $helper, $globalsObj, $pingIdleTimeoutSec, $maxConsecutiveReconnects);
+        ami_check_post_reconnect_grace($helper, $globalsObj, $postReconnectGraceSec, $maxConsecutiveReconnects);
     }
 
     check_to_remove_bu_holdtimeout($globalsObj);

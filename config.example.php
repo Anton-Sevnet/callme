@@ -80,6 +80,9 @@ return array(
     // Health-check configuration
     'healthCheckTimeout' => 5,   // seconds: cycle watchdog interval
     'pingIdleTimeout' => 30,     // seconds: idle period before PingAction
+    'silenceTimeout' => 90,      // seconds: unconditional silence watchdog (no data from AMI)
+    'postReconnectGrace' => 30, // seconds: grace period to receive events after reconnect
+    'maxConsecutiveReconnects' => 5, // limit before exit(1) for supervisord restart
     'hold_timeout' => 60,        // seconds: max MusicOnHold duration before force hangup
 
     'ami_healthcheck_log' => array(
