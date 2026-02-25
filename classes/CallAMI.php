@@ -142,6 +142,23 @@ class CallAMI {
 	    return $result;
 	}
 
+	/**
+	 * Check if extension exists as SIP peer via AMI SIPShowPeer
+	 *
+	 * @param string $extension Internal number (e.g. 117, 219)
+	 * @return bool true if SIP peer exists, false otherwise (e.g. IAX2-tunneled)
+	 */
+	public function isSipPeer($extension) {
+		$pamiClientOptions = $this->conf;
+		if (!$pamiClientOptions) return false;
+		$pamiClient = new PamiClient($pamiClientOptions);
+		$action = new SIPShowPeerAction($extension);
+		$pamiClient->open();
+		$result = $pamiClient->send($action);
+		$pamiClient->close();
+		return $result->isSuccess();
+	}
+
     /**
      * GetVar channel
      *

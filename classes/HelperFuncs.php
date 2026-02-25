@@ -663,6 +663,27 @@ class HelperFuncs {
      *	)
      * We need only CALL_ID
      */
+    /**
+     * Format outgoing call number for Bitrix24 (international format).
+     * Uses config extentions to determine country prefix (ru=+7, md=+373).
+     *
+     * @param string $callerid Raw number from Asterisk (external number being called)
+     * @return string Formatted number e.g. +79001234567 or +37322123456
+     */
+    public function formatOutgoingNumber($callerid) {
+        $callerid = preg_replace('/\D+/', '', (string)$callerid);
+        if ($callerid === '') {
+            return '';
+        }
+        if (strlen($callerid) >= 3 && substr($callerid, 0, 3) === '373') {
+            return '+' . $callerid;
+        }
+        if ((substr($callerid, 0, 1) === '7' || substr($callerid, 0, 1) === '8') && strlen($callerid) >= 10) {
+            return '+7' . substr($callerid, -10);
+        }
+        return '+' . $callerid;
+    }
+
     public function runOutputCall($exten, $callerid, $line){
         if (substr($callerid,0,1) == "9" and !(strlen($callerid) == 10)){
             $callerid = substr($callerid, 1);
@@ -670,10 +691,11 @@ class HelperFuncs {
         if (strlen($callerid) == 7){
             $callerid = "8342".$callerid;
         }
+        $phoneNumber = $this->formatOutgoingNumber($callerid);
         $result = $this->getBitrixApi(array(
             'USER_PHONE_INNER' => $exten,
             //'USER_ID' => $argv[1],
-            'PHONE_NUMBER' => "+7".substr($callerid, -10),
+            'PHONE_NUMBER' => $phoneNumber,
             'LINE_NUMBER' => $line,
             'TYPE' => 1,
 //            'CALL_START_DATE' => date("Y-m-d H:i:s"),

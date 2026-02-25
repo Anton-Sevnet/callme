@@ -63,7 +63,20 @@ if(!empty($request)){
             switch ($request['event']) {
                 case 'ONEXTERNALCALLSTART': //внешний звонок
                     $helper->writeToLog($request['event'],'ONEXTERNALCALLSTART');
-                    //отправляем на астериск
+                    $helper->writeToLog([
+                        'USER_ID' => $request['data']['USER_ID'],
+                        'intNum' => $intNum,
+                        'CalledNumber' => $CalledNumber,
+                        'CallID' => $CallID,
+                    ], 'OriginateCall params before AMI');
+                    $isSip = $callami->isSipPeer($intNum);
+                    $tech = $isSip ? 'SIP' : 'IAX2/posttun';
+                    $channelStr = $tech . '/' . $intNum;
+                    $helper->writeToLog([
+                        'isSipPeer' => $isSip,
+                        'tech' => $tech,
+                        'channel' => $channelStr,
+                    ], 'OriginateCall channel determined');
                     $response = $callami->OriginateCall($intNum, $CalledNumber, $tech, $CallID, $context);
                     $helper->writeToLog($response,'PAMI response');
                     break; 

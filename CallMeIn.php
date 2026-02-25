@@ -2087,6 +2087,8 @@ $pamiClient->registerEventListener(
         //добавляем звонок в массив, для обработки в других ивентах
         $globalsObj->calls[$callLinkedid] = $call_id;
         $globalsObj->callsByCallId[$call_id] = $callLinkedid; // Обратная связка для fallback
+        $globalsObj->callDirections[$callLinkedid] = 'outbound';
+        $globalsObj->callIdByLinkedid[$callLinkedid] = $call_id;
         $globalsObj->uniqueids[] = $callLinkedid;
         $globalsObj->Dispositions[$callLinkedid] = 'NO ANSWER';
         $globalsObj->intNums[$callLinkedid] = $intNum;
@@ -2103,6 +2105,7 @@ $pamiClient->registerEventListener(
     $callerIdNum = (string)$event->getCallerIdNum();
     $callerLen = strlen(preg_replace('/\D+/', '', $callerIdNum));
     $channel = $event->getKey('Channel') ?? '';
+    $linkedid = $event->getKey('Linkedid') ?? $event->getKey('Uniqueid');
     return
         ($event->getExtension() !== 's')
 //            && ($event->getContext() === 'E1' || $event->getContext() == 'office')
@@ -2111,6 +2114,7 @@ $pamiClient->registerEventListener(
             && (empty($globalsObj->user_show_cards) || in_array($callerIdNum, $globalsObj->user_show_cards))
             && ($callerLen <= 4)
             && (strpos($channel, 'Local/') !== 0)
+            && !($linkedid && isset($globalsObj->originateCalls[$linkedid]))
             ;
 }
 );
