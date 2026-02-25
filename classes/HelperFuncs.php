@@ -692,16 +692,19 @@ class HelperFuncs {
             $callerid = "8342".$callerid;
         }
         $phoneNumber = $this->formatOutgoingNumber($callerid);
-        $result = $this->getBitrixApi(array(
+        $userId = $this->getUSER_IDByIntNum($exten);
+        $data = array(
             'USER_PHONE_INNER' => $exten,
-            //'USER_ID' => $argv[1],
             'PHONE_NUMBER' => $phoneNumber,
             'LINE_NUMBER' => $line,
             'TYPE' => 1,
-//            'CALL_START_DATE' => date("Y-m-d H:i:s"),
             'CRM_CREATE' => 0,
             'SHOW' => 1,
-        ), 'telephony.externalcall.register');
+        );
+        if ($userId) {
+            $data['USER_ID'] = (int)$userId;
+        }
+        $result = $this->getBitrixApi($data, 'telephony.externalcall.register');
         echo var_dump($result);
         $this->writeToLog($result, 'runOutputCall result');
         if ($result){

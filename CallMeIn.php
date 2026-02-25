@@ -2066,16 +2066,17 @@ $pamiClient->registerEventListener(
             return "";
         }
 
-        $call_id = $helper->runOutputCall($intNum,$extNum, "");
-        $result = $helper->showOutputCall($intNum, $call_id);
-        $helper->writeToLog($event->getRawContent()."\n");
-        $helper->writeToLog(var_export($result, true), "show output card to $intNum ");
-
+        $call_id = $helper->runOutputCall($intNum, $extNum, "");
         if ($call_id === false || !is_string($call_id)) {
+            $helper->writeToLog(['intNum' => $intNum, 'extNum' => $extNum],
+                'NewchannelEventOutgoing: runOutputCall failed, no call_id');
             echo "\n-------------------------------------------------------------------\n\r";
             echo "\n\r";
             return "";
         }
+        $result = $helper->showOutputCall($intNum, $call_id);
+        $helper->writeToLog($event->getRawContent()."\n");
+        $helper->writeToLog(var_export($result, true), "show output card to $intNum ");
 
         echo "call_id ".$call_id." strlen ".strlen($call_id)." \n";
         //логируем параметры звонка
@@ -3505,7 +3506,8 @@ $pamiClient->registerEventListener(
                         'ORIGINATE FALLBACK: Found intNum in regular intNums array');
                 }
                 
-                $finishResult = $helper->finishCall($call_id, $intNum, $duration, $statusCode);
+                $userId = $helper->getUSER_IDByIntNum($intNum);
+                $finishResult = $helper->finishCall($call_id, $intNum, $duration, $statusCode, $userId ?: null);
                 
                 $helper->writeToLog([
                     'linkedid' => $linkedid,
