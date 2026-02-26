@@ -132,7 +132,7 @@ class CallAMI {
 		$originateMsg->setPriority('1');
 		$originateMsg->setExtension($CalledNumber);
 		$originateMsg->setAsync('true');
-		$originateMsg->setCallerId('CallMe');
+		$originateMsg->setCallerId('"CallMe" <' . $intNum . '>');
 		//переменные для отслеживания Originate-вызовов
 		$originateMsg->setVariable('CallMeCALL_ID', $CallId);
 		$originateMsg->setVariable('IS_CALLME_ORIGINATE', '1');
