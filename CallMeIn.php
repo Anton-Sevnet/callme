@@ -182,6 +182,94 @@ function ami_update_originate_activity(EventMessage $event, $globalsObj)
     }
 }
 
+/**
+ * Помечает исходящий Originate-звонок как отвеченный (Bridge / Dial).
+ * answer_time выставляется один раз — в момент соединения, не при завершении Dial.
+ */
+function callme_originate_mark_answered($linkedid, Globals $globalsObj)
+{
+    if (!$linkedid || !isset($globalsObj->originateCalls[$linkedid])) {
+        return;
+    }
+    if (empty($globalsObj->originateCalls[$linkedid]['answered'])) {
+        $globalsObj->originateCalls[$linkedid]['answered'] = true;
+        $globalsObj->originateCalls[$linkedid]['answer_time'] = time();
+    }
+    $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
+}
+
+/**
+ * Регистрирует peer-канал (транк) в originateCalls для корректного Hangup.
+ */
+function callme_originate_register_peer_channel($linkedid, $peerUniqueid, $peerChannel, Globals $globalsObj)
+{
+    if (!$linkedid || !$peerUniqueid || !isset($globalsObj->originateCalls[$linkedid])) {
+        return;
+    }
+    $globalsObj->uniqueidToLinkedid[$peerUniqueid] = $linkedid;
+    $globalsObj->originateCalls[$linkedid]['channels'][$peerUniqueid] = array(
+        'channel' => $peerChannel,
+        'added_at' => time(),
+    );
+    $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
+}
+
+/**
+ * Обработка Dial End для исходящего Originate (Asterisk 1.8: Event Dial / SubEvent End).
+ */
+function callme_originate_handle_dial_end(EventMessage $event, $uniqueid, $linkedid, HelperFuncs $helper, Globals $globalsObj)
+{
+    if (!isset($globalsObj->originateCalls[$linkedid])) {
+        return;
+    }
+
+    $dialStatus = strtoupper((string)($event->getDialStatus() ?? $event->getKey('DialStatus') ?? ''));
+    $data = $globalsObj->originateCalls[$linkedid];
+
+    $globalsObj->originateCalls[$linkedid]['last_dialstatus'] = $dialStatus;
+    $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
+
+    if ($dialStatus === 'ANSWER') {
+        callme_originate_mark_answered($linkedid, $globalsObj);
+        $helper->writeToLog(array(
+            'uniqueid' => $uniqueid,
+            'linkedid' => $linkedid,
+            'call_id' => $data['call_id'] ?? null,
+            'dialStatus' => $dialStatus,
+            'total_channels' => count($data['channels'] ?? array()),
+        ), 'ORIGINATE: External dial SUCCESS - call answered');
+        return;
+    }
+
+    if (!empty($data['answered'])) {
+        return;
+    }
+
+    $statusCode = $helper->getStatusCodeFromDialStatus($dialStatus);
+    $finishResult = $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
+
+    $helper->writeToLog(array(
+        'uniqueid' => $uniqueid,
+        'linkedid' => $linkedid,
+        'call_id' => $data['call_id'],
+        'dialStatus' => $dialStatus,
+        'statusCode' => $statusCode,
+        'finishResult' => $finishResult,
+    ), 'ORIGINATE: External dial FAILED - finishing call immediately');
+
+    if (!empty($data['intNum']) && !empty($data['call_id'])) {
+        $helper->hideInputCall($data['intNum'], $data['call_id']);
+    }
+
+    foreach ($data['channels'] as $uid => $channelData) {
+        unset($globalsObj->uniqueidToLinkedid[$uid]);
+    }
+    unset($globalsObj->originateCalls[$linkedid]);
+    if (isset($globalsObj->callDirections[$linkedid])) {
+        unset($globalsObj->callDirections[$linkedid]);
+    }
+}
+
 function compute_active_calls_hash($globalsObj)
 {
     if (empty($globalsObj->calls) && empty($globalsObj->originateCalls) && empty($globalsObj->Onhold)) {
@@ -2578,6 +2666,12 @@ $pamiClient->registerEventListener(
             if (!$callUniqueid) {
                 return;
             }
+            $linkedid = $globalsObj->uniqueidToLinkedid[$callUniqueid] ?? null;
+            if ($linkedid && isset($globalsObj->originateCalls[$linkedid])
+                && ($globalsObj->originateCalls[$linkedid]['is_originate'] ?? false)) {
+                callme_originate_handle_dial_end($event, $callUniqueid, $linkedid, $helper, $globalsObj);
+                return;
+            }
             if (!in_array($callUniqueid, $globalsObj->uniqueids)) {
                 return;
             }
@@ -3350,75 +3444,72 @@ $pamiClient->registerEventListener(
     }
 );
 
-// 4. DialEndEvent - результат набора внешнего номера
+// 4. Dial End — результат набора внешнего номера (DialEndEvent или Dial/SubEvent End на Asterisk 1.8)
 $pamiClient->registerEventListener(
     function (EventMessage $event) use ($helper, $globalsObj) {
-        /** @var DialEndEvent $event */
-        $uniqueid = $event->getKey("UniqueID");
-        $dialStatus = $event->getDialStatus();
-        
-        // Находим linkedid через маппинг
-        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
-        
-        if ($linkedid && isset($globalsObj->originateCalls[$linkedid])) {
-            $data = $globalsObj->originateCalls[$linkedid];
-            
-            $globalsObj->originateCalls[$linkedid]['last_dialstatus'] = $dialStatus;
-            $globalsObj->originateCalls[$linkedid]['last_activity'] = time();
-            
-            if ($dialStatus === 'ANSWER') {
-                // УСПЕХ - помечаем что звонок отвечен
-                $globalsObj->originateCalls[$linkedid]['answered'] = true;
-                $globalsObj->originateCalls[$linkedid]['answer_time'] = time();
-                
-                $helper->writeToLog([
-                    'uniqueid' => $uniqueid,
-                    'linkedid' => $linkedid,
-                    'call_id' => $data['call_id'],
-                    'dialStatus' => $dialStatus,
-                    'total_channels' => count($data['channels'])
-                ], 'ORIGINATE: External dial SUCCESS - call answered');
-                
-            } else {
-                // ОШИБКА - завершаем звонок СРАЗУ
-                $statusCode = $helper->getStatusCodeFromDialStatus($dialStatus);
-                $finishResult = $helper->finishCall($data['call_id'], $data['intNum'], 0, $statusCode);
-                
-                $helper->writeToLog([
-                    'uniqueid' => $uniqueid,
-                    'linkedid' => $linkedid,
-                    'call_id' => $data['call_id'],
-                    'dialStatus' => $dialStatus,
-                    'statusCode' => $statusCode,
-                    'finishResult' => $finishResult
-                ], 'ORIGINATE: External dial FAILED - finishing call immediately');
-                
-                // СКРЫВАЕМ карточку звонка для пользователя
-                if (!empty($data['intNum']) && !empty($data['call_id'])) {
-                    $hideResult = $helper->hideInputCall($data['intNum'], $data['call_id']);
-                    $helper->writeToLog([
-                        'intNum' => $data['intNum'],
-                        'call_id' => $data['call_id'],
-                        'hideResult' => $hideResult
-                    ], 'ORIGINATE: Card hidden (dial failed)');
-                    echo "ORIGINATE: card hidden for intNum: {$data['intNum']} (dial failed)\n";
-                }
-                
-                // Очистка всех маппингов
-                foreach ($data['channels'] as $uid => $channelData) {
-                    unset($globalsObj->uniqueidToLinkedid[$uid]);
-                }
-                unset($globalsObj->originateCalls[$linkedid]);
-                if (isset($globalsObj->callDirections[$linkedid])) {
-                    unset($globalsObj->callDirections[$linkedid]);
-                }
-            }
+        $uniqueid = $event->getKey('UniqueID') ?? $event->getKey('Uniqueid');
+        if (!$uniqueid) {
+            return;
         }
+        $linkedid = $globalsObj->uniqueidToLinkedid[$uniqueid] ?? null;
+        if (!$linkedid || !isset($globalsObj->originateCalls[$linkedid])) {
+            return;
+        }
+        callme_originate_handle_dial_end($event, $uniqueid, $linkedid, $helper, $globalsObj);
     },
     function (EventMessage $event) use ($globalsObj) {
-        $uniqueid = $event->getKey("UniqueID");
-        return $event instanceof DialEndEvent 
-            && isset($globalsObj->uniqueidToLinkedid[$uniqueid]);
+        $uniqueid = $event->getKey('UniqueID') ?? $event->getKey('Uniqueid');
+        if (!$uniqueid || !isset($globalsObj->uniqueidToLinkedid[$uniqueid])) {
+            return false;
+        }
+        if ($event instanceof DialEndEvent) {
+            return true;
+        }
+        return $event->getName() === 'Dial' && $event->getKey('SubEvent') === 'End';
+    }
+);
+
+// 4b. Bridge — соединение с абонентом для исходящего Originate (AMI молчит во время разговора)
+$pamiClient->registerEventListener(
+    function (EventMessage $event) use ($helper, $globalsObj) {
+        /** @var BridgeEvent $event */
+        if ($event->getBridgeState() !== 'Link') {
+            return;
+        }
+
+        $uid1 = $event->getUniqueID1();
+        $uid2 = $event->getUniqueID2();
+        foreach (array($uid1, $uid2) as $uid) {
+            if (!$uid) {
+                continue;
+            }
+            $linkedid = $globalsObj->uniqueidToLinkedid[$uid] ?? null;
+            if (!$linkedid || !isset($globalsObj->originateCalls[$linkedid])) {
+                continue;
+            }
+            if (!($globalsObj->originateCalls[$linkedid]['is_originate'] ?? false)) {
+                continue;
+            }
+
+            $peerUid = ($uid === $uid1) ? $uid2 : $uid1;
+            $peerChannel = ($uid === $uid1) ? $event->getChannel2() : $event->getChannel1();
+            callme_originate_mark_answered($linkedid, $globalsObj);
+            if ($peerUid && $peerChannel) {
+                callme_originate_register_peer_channel($linkedid, $peerUid, $peerChannel, $globalsObj);
+            }
+
+            $helper->writeToLog(array(
+                'linkedid' => $linkedid,
+                'uniqueid' => $uid,
+                'peerUniqueid' => $peerUid,
+                'peerChannel' => $peerChannel,
+                'call_id' => $globalsObj->originateCalls[$linkedid]['call_id'] ?? null,
+            ), 'ORIGINATE: Bridge link - call answered');
+            return;
+        }
+    },
+    function (EventMessage $event) {
+        return $event instanceof BridgeEvent && $event->getBridgeState() === 'Link';
     }
 );
 
@@ -3606,6 +3697,11 @@ function checkOriginateHealthy($globalsObj, $helper) {
     foreach ($globalsObj->originateCalls as $linkedId => $data) {
         // Пропускаем активные звонки (события приходят)
         if ($now - $data['last_activity'] < 30) {
+            continue;
+        }
+
+        // Отвеченный разговор: AMI не шлёт события на канале — не завершаем по таймауту неактивности
+        if (!empty($data['answered'])) {
             continue;
         }
         
