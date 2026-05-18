@@ -223,7 +223,7 @@ function callme_originate_handle_dial_end(EventMessage $event, $uniqueid, $linke
         return;
     }
 
-    $dialStatus = strtoupper((string)($event->getDialStatus() ?? $event->getKey('DialStatus') ?? ''));
+    $dialStatus = strtoupper((string)($event->getKey('DialStatus') ?? ''));
     $data = $globalsObj->originateCalls[$linkedid];
 
     $globalsObj->originateCalls[$linkedid]['last_dialstatus'] = $dialStatus;
